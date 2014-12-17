@@ -203,9 +203,6 @@ def upload_folder(drive, folder_path, description=None, parent_id=None,
     for subdir in dirs:
         upload_folder(drive, subdir, parent_id=folder_id, checksum=checksum)
 
-def update_file(drive, file_id, key, value):
-    print("Update stub")
-
 # -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
@@ -407,30 +404,6 @@ def cli():
         help="File to upload")
     parser_upload.set_defaults(func=cli_upload_file)
 
-    # Update
-    parser_update = subparsers.add_parser(
-        "update",
-        help="Update a file in Google Drive",
-        formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_update.add_argument("--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
-    parser_update.add_argument(
-        "-k", "--key",
-        help="Metadata property to update")
-    parser_update.add_argument(
-        "-v", "--value",
-        help="Value of updated metadata property")
-    parser_update.add_argument(
-        "-f", "--file",
-        help="""Local file to upload as replacement for Google Drive file
-             specified by ID""")
-    parser_update.add_argument(
-        "-i", "--id",
-        help="File ID")
-    parser_update.set_defaults(func=cli_update_file)
-
     args = parser.parse_args()
     if args.verbose:
         verbose()
@@ -457,11 +430,6 @@ def cli_upload_file(args):
     else:
         upload_file(args.drive, args.file, args.description, args.parent,
                     args.checksum)
-
-def cli_update_file(args):
-    if bool(args.key) != bool(args.value):
-        error("key and value are required if either is specified")
-    update_file(args.drive, args.id, args.key, args.value)
 
 
 if __name__ == "__main__":
