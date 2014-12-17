@@ -18,13 +18,15 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
+VERSION = "0.1.0"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
-oauth2 = logging.getLogger("oauth2client.client")
+oauth2_client = logging.getLogger("oauth2client.client")
+oauth2_util = logging.getLogger("oauth2client.util")
 
 # -----------------------------------------------------------------------------
 # Main
@@ -39,7 +41,7 @@ def main():
 # Configuration functions
 # -----------------------------------------------------------------------------
 def configure_logging():
-    fmt = "%(asctime)-25s %(levelname)-10s: %(message)s"
+    fmt = "%(asctime)-25s %(levelname)-10s %(name)-26s: %(message)s"
     datefmt = "%m/%d/%Y %I:%M:%S %p"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
@@ -47,9 +49,14 @@ def configure_logging():
     google_handler = logging.StreamHandler()
     google_handler.setFormatter(formatter)
     googleapi.addHandler(google_handler)
-    oauth2.addHandler(google_handler)
+    oauth2_client.addHandler(google_handler)
+    oauth2_util.addHandler(google_handler)
     googleapi.setLevel(logging.WARNING)
-    oauth2.setLevel(logging.WARNING)
+    oauth2_client.setLevel(logging.WARNING)
+    # oauth2_util is spitting out warnings like this
+    # new_request() takes at most 1 positional argument (6 given)
+    # set to error here to ignore
+    oauth2_util.setLevel(logging.ERROR)
 
     main_handler = logging.StreamHandler()
     main_handler.setFormatter(formatter)
@@ -58,7 +65,8 @@ def configure_logging():
 
 def verbose():
     googleapi.setLevel(logging.INFO)
-    oauth2.setLevel(logging.INFO)
+    oauth2_client.setLevel(logging.INFO)
+    oauth2_util.setLevel(logging.INFO)
     log.setLevel(logging.DEBUG)
 
 def configure_signals():
@@ -326,12 +334,17 @@ def cli():
     parser = ArgumentParser(
         description="Google Drive command-line interface",
         formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
+
     subparsers = parser.add_subparsers(
+        dest="subcommand_name",
         help="Sub-command help")
+
+    # Version
+    parser_version = subparsers.add_parser(
+        "version", 
+        help="Print the semantic version number",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_version.set_defaults(func=cli_version)
 
     # List
     parser_list = subparsers.add_parser(
@@ -405,9 +418,10 @@ def cli():
     parser_upload.set_defaults(func=cli_upload_file)
 
     args = parser.parse_args()
-    if args.verbose:
-        verbose()
-    args.drive = GoogleDrive(authorize())  # add GoogleDrive instance to args
+    if args.subcommand_name != "version":
+        args.drive = GoogleDrive(authorize())  # add GoogleDrive
+        if args.verbose:
+            verbose()
     args.func(args)
 
 def cli_list_files(args):
@@ -431,6 +445,8 @@ def cli_upload_file(args):
         upload_file(args.drive, args.file, args.description, args.parent,
                     args.checksum)
 
+def cli_version(args):
+    print("%s version %s" % (PROJ, VERSION))
 
 if __name__ == "__main__":
     main()
