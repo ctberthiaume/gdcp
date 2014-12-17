@@ -1,0 +1,468 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import signal
+import logging
+from logging import info, warning
+import re
+import subprocess
+import datetime
+import time
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+import mimetypes
+import httplib2
+import apiclient.discovery
+import apiclient.http
+import oauth2client.client
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+
+PROJ = "gdcp"  # name of this project
+CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
+
+
+log = logging.getLogger(PROJ)
+googleapi = logging.getLogger("googleapiclient.discovery")
+oauth2 = logging.getLogger("oauth2client.client")
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+def main():
+    configure_logging()
+    configure_signals()
+    do_setup()
+    cli()
+
+# -----------------------------------------------------------------------------
+# Configuration functions
+# -----------------------------------------------------------------------------
+def configure_logging():
+    fmt = "%(asctime)-25s %(levelname)-10s: %(message)s"
+    datefmt = "%m/%d/%Y %I:%M:%S %p"
+    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+
+    # Logger instances have been created globally
+    google_handler = logging.StreamHandler()
+    google_handler.setFormatter(formatter)
+    googleapi.addHandler(google_handler)
+    oauth2.addHandler(google_handler)
+    googleapi.setLevel(logging.WARNING)
+    oauth2.setLevel(logging.WARNING)
+
+    main_handler = logging.StreamHandler()
+    main_handler.setFormatter(formatter)
+    log.addHandler(main_handler)
+    log.setLevel(logging.INFO)
+
+def verbose():
+    googleapi.setLevel(logging.INFO)
+    oauth2.setLevel(logging.INFO)
+    log.setLevel(logging.DEBUG)
+
+def configure_signals():
+    # signal handling
+    # reset SIGINT and SIGPIPE
+    # don't raise KeyboardInterrupt exception on SIGINT
+    # dont' raise IOError on SIGPIPE
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+def authorize(location=CONFIG_DIR):
+    # Authentication
+    settings_file = os.path.join(location, "settings.yaml")
+    gauth = GoogleAuth(settings_file)
+    gauth.CommandLineAuth()
+    gauth.Authorize()
+    return gauth
+
+def do_setup(location=CONFIG_DIR):
+    settings = os.path.join(location, "settings.yaml")
+    client_secrets = os.path.join(location, "client_secrets.json")
+    credentials = os.path.join(location, "credentials.json")
+
+    settings_text = ["client_config_file: %s" % client_secrets]
+    settings_text.append("get_refresh_token: True")
+    settings_text.append("save_credentials: True")
+    settings_text.append("save_credentials_backend: file")
+    settings_text.append("save_credentials_file: %s" % credentials)
+
+    if not os.path.exists(location):
+        os.mkdir(location)
+    elif not os.path.isdir(location):
+        error("~/.%s already exists and is a file" % PROJ)
+
+    if not os.path.exists(settings):
+        try:
+            with open(settings, "w") as fh:
+                fh.write("\n".join(settings_text) + "\n")
+        except (OSError, IOError) as e:
+            error("Could not create settings file %s.  %s" %
+                  (settings, e))
+
+    if not os.path.exists(client_secrets):
+        msg = ["%s not present" % client_secrets, ""]
+        msg.append("- Visit https://console.developers.google.com/")
+        msg.append("- Create a new project and select it")
+        msg.append("- Under 'APIs' make sure the 'Drive API' is turned on")
+        msg.append("- Under 'Credentials' create a new OAuth client ID")
+        msg.append("  Choose 'Installed -> Other' for application type")
+        msg.append("- Click 'Download JSON' to download the secrets file")
+        msg.append("- Copy the secrets file to %s" % client_secrets)
+        error("\n".join(msg))
+
+    # If credentials have not been obtained, do so now
+    if not os.path.exists(credentials):
+        authorize()
+
+# -----------------------------------------------------------------------------
+# Google Drive interaction functions
+# -----------------------------------------------------------------------------
+def list_files(drive, query, metadata):
+    log.debug("query = %s" % query)
+    file_list = drive.ListFile({"q": query}).GetList()
+    for onefile in file_list:
+        line = []
+        for meta in metadata.split(","):
+            try:
+                line.append("%s: %s" % (meta, onefile[meta]))
+            except KeyError:
+                # Some files don't have common properties
+                # e.g. folders don't have a fileSize
+                # We don't want to throw an error for these cases
+                # error("Invalid metadata property " +
+                #       "'%s' in -m string '%s' " % (meta, metadata) +
+                #       "for file %s" % onefile['title'])
+                pass
+        print ", ".join(line)
+
+def download_file(drive, file_id):
+    downfile = drive.CreateFile({"id": file_id})
+    log.info("Downloading %s ..." % downfile["title"])
+    downfile.GetContentFile(downfile["title"])
+    log.info("Done")
+
+def upload_file(drive, file_path, description=None, parent_id=None,
+                checksum=False):
+    chunksize = 2 ** 20 * 250  # 250 MiB chunks
+    media_body = create_media_body(file_path, chunksize)
+    body = create_body(file_path, parent_id)
+    request = drive.auth.service.files().insert(
+        body=body,
+        media_body=media_body)
+    response = None
+    retries = 0
+    retry_limit = 6
+    prev_progress = 0.00
+
+    t1 = datetime.datetime.now()
+    log.info("Uploading %s, mimeType=%s" %
+             (file_path, media_body.mimetype()))
+
+    while response is None:
+        try:
+            status, response = request.next_chunk()
+            if status:
+                cur_progress = status.progress() * 100
+                # Only print progress every 1% or greater
+                if cur_progress - prev_progress > 1.0:
+                    log.info("Uploaded %.02f%%" % cur_progress)
+                    prev_progress = cur_progress
+        except apiclient.errors.HttpError, e:
+            if e.resp.status in [404]:
+                error("Received HTTP error 404, aborting")
+            if e.resp.status in [500, 502, 503, 504]:
+                if retries > retry_limit:
+                    error("Too many retries, aborting")
+                else:
+                    delay = 2 ** retries
+                    log.warning(
+                        "HTTP error code %d, retrying in %d seconds ..." %
+                        (e.resp.status, delay))
+                    time.sleep(delay)
+                    retries += 1
+    t2 = datetime.datetime.now()
+
+    log.info("Uploaded 100.00%% in %s" % format_timedelta(t1, t2))
+
+    if checksum:
+        check_md5(file_path, response["md5Checksum"])
+
+def upload_folder(drive, folder_path, description=None, parent_id=None,
+                  checksum=False):
+    title = get_folder_name(folder_path)
+    folder_id = create_folder(drive, title, description, parent_id)
+    log.info("Created folder for %s" % folder_path)
+
+    allfiles = path_join(folder_path, os.listdir(folder_path))
+    files = file_filter(allfiles)
+    dirs =  dir_filter(allfiles)
+    for onefile in files:
+        upload_file(drive, onefile, parent_id=folder_id, checksum=checksum)
+    for subdir in dirs:
+        upload_folder(drive, subdir, parent_id=folder_id, checksum=checksum)
+
+def update_file(drive, file_id, key, value):
+    print("Update stub")
+
+# -----------------------------------------------------------------------------
+# Utility Functions
+# -----------------------------------------------------------------------------
+def create_media_body(file_path, chunksize):
+    mimetype = mimetypes.guess_type(file_path)[0]
+    if mimetype is None:
+        mimetype = "application/octet-stream"
+    media_body = apiclient.http.MediaFileUpload(
+        file_path,
+        chunksize=chunksize,
+        resumable=True,
+        mimetype=mimetype)
+    return media_body
+
+def create_body(file_path, parent_id=None):
+    body = {"title": os.path.basename(file_path)}
+    if parent_id is not None:
+        body["parents"] = [{"id": parent_id}]
+    return body
+
+def check_md5(file_path, response_md5):
+    log.info("Calculating MD5 checksum for %s" % file_path)
+    try:
+        output = subprocess.check_output(["openssl", "md5", file_path],
+                                         stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        error("MD5 calculation exited with an error: '%s'" %
+              output.rstrip())
+    md5 = output.split()[-1]
+    if md5 == response_md5:
+        log.info("Upload verified with MD5 checksum %s" % response_md5)
+    else:
+        error("MD5 checksum verification failed: %s (local) != %s" %
+              (md5, response_md5))
+
+# Return iterable of items in files joined to join_path
+def path_join(join_path, files):
+    return map(lambda x: os.path.join(join_path, x), files)
+
+# Return iterable of file which are not symbolic links
+def file_filter(files):
+    return filter(
+        lambda x: not os.path.islink(x) and os.path.isfile(x),
+        files)
+
+# Return iterable of directories which are not symbolic links
+def dir_filter(files):
+    return filter(
+        lambda x: not os.path.islink(x) and os.path.isdir(x),
+        files)
+
+def get_folder_name(folder_path):
+    parts = folder_path.split("/")
+    i = -1
+    while not parts[i]:
+        i -= 1
+    return parts[i]
+
+def create_folder(drive, title, description=None, parent_id=None):
+    metadata = {
+        "title": title,
+        "mimeType": "application/vnd.google-apps.folder"
+    }
+    if description is not None:
+        metadata["description"] = description
+    if parent_id is not None:
+        metadata["parents"] = [{"id": parent_id}]
+    folder = drive.CreateFile(metadata)
+    folder.Upload()
+    return folder["id"]
+
+def error(msg):
+    log.error(msg)
+    sys.exit(1)
+
+def format_timedelta(t1, t2):
+    delta = t2 - t1
+    delta_s = int(delta.total_seconds())
+    elapse = []
+    days = delta_s / (24 * 60 * 60)
+    if days:
+        elapse.append("%id" % days)
+    delta_s -= days * 24 * 60 * 60
+    hours = delta_s / (60 * 60)
+    if hours:
+        elapse.append("%ih" % hours)
+    delta_s -= hours * 60 * 60
+    minutes = delta_s / 60
+    if minutes:
+        elapse.append("%im" % minutes)
+    delta_s -= minutes * 60
+    seconds = delta_s
+    elapse.append("%is" % seconds)
+
+    return ": ".join(elapse)
+
+"""Add 'trashed = false' to a Google Drive file listing query if trashed status
+is not already specified.
+"""
+def add_trashed_false_to_query(query):
+    verify_query_trashed(query)
+    trashed_re = re.compile(r"trashed\s*=\s*true|trashed\s*=\s*false")
+    if not trashed_re.search(query):
+        query = query + " and trashed = false"
+    return query
+
+"""Make sure trashed is specify at most once in query
+"""
+def verify_query_trashed(query):
+    trashed_re = re.compile(r"trashed\s*=\s*true|trashed\s*=\s*false")
+    trash_count = len(trashed_re.findall(query))
+    if trash_count > 1:
+        error("trashed status specified more than once in query")
+
+# -----------------------------------------------------------------------------
+# Command-line interface functions
+# -----------------------------------------------------------------------------
+"""Parse command-line options.
+"""
+def cli():
+    parser = ArgumentParser(
+        description="Google Drive command-line interface",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    subparsers = parser.add_subparsers(
+        help="Sub-command help")
+
+    # List
+    parser_list = subparsers.add_parser(
+        "list", 
+        help="List files in Google Drive",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_list.add_argument("--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    parser_list.add_argument("-i", "--include_trashed",
+        default=False,
+        action="store_true",
+        help="""If trashed is not specified in query, list both trashed and
+                untrashed files.  If trashed is not specified in query and 
+                -i is not used, only untrashed files will be listed.  If
+                trashed is specified this option has no effect.""")
+    parser_list.add_argument(
+        "-q", "--query",
+        default="trashed = false",
+        help="""Search query string for file listing.
+             See https://developers.google.com/drive/web/search-parameters.""")
+    parser_list.add_argument(
+        "-m", "--metadata",
+        default="title,fileSize,id,md5Checksum",
+        help="""Comma separated list of metadata keys to display.
+             See
+             https://developers.google.com/drive/v2/reference/files#resource""")
+    parser_list.set_defaults(func=cli_list_files)
+
+    # Download
+    parser_download = subparsers.add_parser(
+        "download", 
+        help="Download a file from Google Drive",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_download.add_argument("--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    parser_download.add_argument(
+        "-i", "--id",
+        help="File ID")
+    parser_download.set_defaults(func=cli_download_file)
+
+    # Upload
+    parser_upload = subparsers.add_parser(
+        "upload", 
+        help="Upload a file or folder to Google Drive",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_upload.add_argument("--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    parser_upload.add_argument(
+        "-p", "--parent",
+        metavar="ID",
+        help="""Parent ID, i.e. containing folder ID.  If not specified
+             file will be placed in root folder.""")
+    parser_upload.add_argument(
+        "-c", "--checksum",
+        default=False,
+        action="store_true",
+        help="Verify upload success by MD5 checksum after upload"
+    )
+    parser_upload.add_argument(
+        "-d", "--description",
+        help="Description for file/folder")
+    parser_upload.add_argument(
+        "file",
+        help="File to upload")
+    parser_upload.set_defaults(func=cli_upload_file)
+
+    # Update
+    parser_update = subparsers.add_parser(
+        "update",
+        help="Update a file in Google Drive",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_update.add_argument("--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    parser_update.add_argument(
+        "-k", "--key",
+        help="Metadata property to update")
+    parser_update.add_argument(
+        "-v", "--value",
+        help="Value of updated metadata property")
+    parser_update.add_argument(
+        "-f", "--file",
+        help="""Local file to upload as replacement for Google Drive file
+             specified by ID""")
+    parser_update.add_argument(
+        "-i", "--id",
+        help="File ID")
+    parser_update.set_defaults(func=cli_update_file)
+
+    args = parser.parse_args()
+    if args.verbose:
+        verbose()
+    args.drive = GoogleDrive(authorize())  # add GoogleDrive instance to args
+    args.func(args)
+
+def cli_list_files(args):
+    if not args.include_trashed:
+        args.query = add_trashed_false_to_query(args.query)
+    list_files(args.drive, args.query, args.metadata)
+
+def cli_download_file(args):
+    download_file(args.drive, args.id)
+
+def cli_upload_file(args):
+    if os.path.islink(args.file):
+        error("Uploading symbolic links not supported")
+    if os.path.isdir(args.file):
+        folder = get_folder_name(args.file)
+        if folder in [".", ".."]:
+            error("'.' or '..' cannot be used at the end of folder path")
+        upload_folder(args.drive, args.file, args.description, args.parent,
+                      args.checksum)
+    else:
+        upload_file(args.drive, args.file, args.description, args.parent,
+                    args.checksum)
+
+def cli_update_file(args):
+    if bool(args.key) != bool(args.value):
+        error("key and value are required if either is specified")
+    update_file(args.drive, args.id, args.key, args.value)
+
+
+if __name__ == "__main__":
+    main()
