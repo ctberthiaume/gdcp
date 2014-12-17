@@ -1,7 +1,12 @@
 # gdcp (Google Drive cp) - An scp-like tool to interact with Google Drive from the command-line
 
 ## Installation
-`gdcp` is a python script which depends on [PyDrive](https://pypi.python.org/pypi/PyDrive).  The easiest way to install PyDrive is with `pip`.
+`gdcp` is a python script which depends on
+
+* Python 2.7
+* [PyDrive](https://pypi.python.org/pypi/PyDrive)
+
+The easiest way to install PyDrive is with `pip`.
 
     $ pip install pydrive
 
