@@ -16,7 +16,7 @@ If `pip` is not already installed on your system, it should be possible to insta
 
 These commands may require superuser privileges, e.g. `sudo`.
 
-Now make place `gdcp` somwhere in your path and make sure it's executable.  For example, if `~/bin` is in your path
+Now place `gdcp` somwhere in your path and make sure it's executable.  For example, if `~/bin` is in your path
 
     $ git clone https://github.com/ctberthiaume/gdcp.git
     $ cp gdcp/gdcp ~/bin
