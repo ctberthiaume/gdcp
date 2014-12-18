@@ -311,21 +311,6 @@ def format_timedelta(t1, t2):
 
     return ": ".join(elapse)
 
-"""Add 'trashed = false' to a Google Drive file listing query if trashed status
-is not already specified.
-"""
-def add_trashed_false_to_query(query):
-    trashed_clauses = get_query_trashed_clauses(query)
-    if len(trashed_clauses) == 0:
-        query += " and trashed = false"
-    return query
-
-"""Get a list of query trash clauses
-"""
-def get_query_trashed_clauses(query):
-    trashed_re = re.compile(r"trashed\s*=\s*true|trashed\s*=\s*false")
-    return trashed_re.findall(query)
-
 def is_folder(onefile):
     return onefile["mimeType"] == "application/vnd.google-apps.folder"
 
@@ -360,22 +345,26 @@ def cli():
         action="store_true",
         help="Verbose logging output")
     parser_list.add_argument(
-        "-q", "--query",
-        default="'root' in parents and trashed = false",
-        help="""Search query string for file listing.
-             See https://developers.google.com/drive/web/search-parameters.""")
-    parser_list.add_argument(
         "-m", "--metadata",
         default="title,fileSize,id,md5Checksum",
         help="""Comma separated list of metadata keys to display.
              See
              https://developers.google.com/drive/v2/reference/files#resource""")
     parser_list.add_argument(
+        "-q", "--query",
+        help="""Search query string for file listing.  Not compatible with -r
+             or -p.
+             See https://developers.google.com/drive/web/search-parameters.""")
+    parser_list.add_argument(
         "-r", "--recursive",
         default=False,
         action="store_true",
         help="""Recursively list all files in folders within root folder of
-        query""")
+        query.  Not compatible with -q.""")
+    parser_list.add_argument(
+        "-p", "--parent",
+        help="""Parent ID, i.e. containing folder ID.  If not specified listing
+             will start at root folder.  Not compatible with -q.""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -428,13 +417,13 @@ def cli():
     args.func(args)
 
 def cli_list_files(args):
-    trashed_clauses = get_query_trashed_clauses(args.query)
-    if len(trashed_clauses) > 1:
-        error("Multiple trashed clauses not supported")
-    elif len(trashed_clauses) == 1 and trashed_clauses[0].split()[2] == "true":
-        error("'trashed = true' not supported")
+    if args.query:
+        if args.recursive or args.parent:
+            error("-q cannot be used with -r or -p")
     else:
-        args.query += " and trashed = false"
+        if not args.parent:
+            args.parent = "root"
+        args.query = "'%s' in parents and trashed = false" % args.parent
     list_files(args.drive, args.query, args.metadata, args.recursive)
 
 def cli_download_file(args):
