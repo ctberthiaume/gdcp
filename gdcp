@@ -149,11 +149,29 @@ def list_files(drive, query, metadata, recursive=False):
             subquery += "and trashed = false"
             list_files(drive, subquery, metadata, recursive)
 
-def download_file(drive, file_id):
+def download_by_file_id(drive, file_id, root="."):
     downfile = drive.CreateFile({"id": file_id})
-    log.info("Downloading %s ..." % downfile["title"])
-    downfile.GetContentFile(downfile["title"])
-    log.info("Done")
+    download_file(drive, downfile, root)
+ 
+def download_file(drive, gfile, root="."):
+    if is_folder(gfile):
+        download_folder(drive, gfile, root)
+    else:
+        downpath = os.path.join(root, gfile["title"])
+        log.info("Downloading %s" % downpath)
+        gfile.GetContentFile(downpath)
+
+def download_folder(drive, gfolder, root="."):
+    folder_path = os.path.join(root, gfolder["title"])
+    log.info("Creating folder %s" % folder_path)
+    create_lfolder(folder_path)
+    query = "'%s' in parents and trashed = false" % gfolder["id"]
+    file_list = drive.ListFile({"q": query}).GetList()
+    for onefile in file_list:
+        if is_folder(onefile):
+            download_folder(drive, onefile, root=folder_path)
+        else:
+            download_file(drive, onefile, root=folder_path)
 
 def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 checksum=False):
@@ -207,7 +225,7 @@ def upload_folder(drive, folder_path, title=None, description=None,
                   parent_id=None, checksum=False):
     if title is None:
         title = get_folder_name(folder_path)
-    folder_id = create_folder(drive, title, description, parent_id)
+    folder_id = create_gfolder(drive, title, description, parent_id)
     log.info("Created folder for %s" % folder_path)
 
     allfiles = path_join(folder_path, os.listdir(folder_path))
@@ -278,7 +296,9 @@ def get_folder_name(folder_path):
         i -= 1
     return parts[i]
 
-def create_folder(drive, title, description=None, parent_id=None):
+"""Create folder in Google Drive
+"""
+def create_gfolder(drive, title, description=None, parent_id=None):
     metadata = {
         "title": title,
         "mimeType": "application/vnd.google-apps.folder"
@@ -290,6 +310,20 @@ def create_folder(drive, title, description=None, parent_id=None):
     folder = drive.CreateFile(metadata)
     folder.Upload()
     return folder["id"]
+
+"""Create a local folder
+"""
+def create_lfolder(folder_path):
+    try:
+        os.mkdir(folder_path)
+    except OSError as e:
+        error("Could not create directory %s" % folder_path)
+
+def chdir(folder_path):
+    try:
+        os.chdir(folder_path)
+    except OSError as e:
+        error("Could not change to directory %s" % folder_path)
 
 def error(msg):
     log.error(msg)
@@ -357,19 +391,24 @@ def cli():
              https://developers.google.com/drive/v2/reference/files#resource""")
     parser_list.add_argument(
         "-q", "--query",
-        help="""Search query string for file listing.  Not compatible with -r
-             or -p.
+        help="""Search query string for file listing.  Not compatible with -r,
+             -i, or -a.
              See https://developers.google.com/drive/web/search-parameters.""")
     parser_list.add_argument(
         "-r", "--recursive",
         default=False,
         action="store_true",
         help="""Recursively list all files and folders below root folder of
-        query.  Not compatible with -q.""")
+        query.  Not compatible with -q or -a.""")
     parser_list.add_argument(
-        "-p", "--parent",
-        help="""Parent ID, i.e. containing folder ID.  If not specified listing
-             will start at root folder.  Not compatible with -q.""")
+        "-i", "--id",
+        help="""File or folder ID.  If not specified all files in the root
+             folder will be listed.  Not compatible with -q or -a.""")
+    parser_list.add_argument(
+        "-a", "--all",
+        default=False,
+        action="store_true",
+        help="""List all files except for trashed""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -427,16 +466,21 @@ def cli():
 
 def cli_list_files(args):
     if args.query:
-        if args.recursive or args.parent:
-            error("-q cannot be used with -r or -p")
+        if args.recursive or args.id or args.all:
+            error("-q cannot be used with -r, -i, or -a")
+    elif args.all:
+        if args.recursive or args.id:
+            error("-a cannot be used with -r, -i, or -q")
+        args.query = "trashed = false"
     else:
-        if not args.parent:
-            args.parent = "root"
-        args.query = "'%s' in parents and trashed = false" % args.parent
+        if not args.id:
+            args.id = "root"
+        args.query = "'%s' in parents and trashed = false" % args.id
     list_files(args.drive, args.query, args.metadata, args.recursive)
 
 def cli_download_file(args):
-    download_file(args.drive, args.id)
+    download_by_file_id(args.drive, args.id)
+    log.info("Download successful")
 
 def cli_upload_file(args):
     if os.path.islink(args.file):
