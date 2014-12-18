@@ -155,11 +155,13 @@ def download_file(drive, file_id):
     downfile.GetContentFile(downfile["title"])
     log.info("Done")
 
-def upload_file(drive, file_path, description=None, parent_id=None,
+def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 checksum=False):
+    if title is None:
+        title = os.path.basename(file_path)
     chunksize = 2 ** 20 * 250  # 250 MiB chunks
     media_body = create_media_body(file_path, chunksize)
-    body = create_body(file_path, parent_id)
+    body = create_body(file_path, title, description, parent_id)
     request = drive.auth.service.files().insert(
         body=body,
         media_body=media_body)
@@ -201,9 +203,10 @@ def upload_file(drive, file_path, description=None, parent_id=None,
     if checksum:
         check_md5(file_path, response["md5Checksum"])
 
-def upload_folder(drive, folder_path, description=None, parent_id=None,
-                  checksum=False):
-    title = get_folder_name(folder_path)
+def upload_folder(drive, folder_path, title=None, description=None,
+                  parent_id=None, checksum=False):
+    if title is None:
+        title = get_folder_name(folder_path)
     folder_id = create_folder(drive, title, description, parent_id)
     log.info("Created folder for %s" % folder_path)
 
@@ -229,8 +232,10 @@ def create_media_body(file_path, chunksize):
         mimetype=mimetype)
     return media_body
 
-def create_body(file_path, parent_id=None):
-    body = {"title": os.path.basename(file_path)}
+def create_body(file_path, title, description=None, parent_id=None):
+    body = {"title": title}
+    if description is not None:
+        body["description"] = description
     if parent_id is not None:
         body["parents"] = [{"id": parent_id}]
     return body
@@ -359,7 +364,7 @@ def cli():
         "-r", "--recursive",
         default=False,
         action="store_true",
-        help="""Recursively list all files in folders within root folder of
+        help="""Recursively list all files and folders below root folder of
         query.  Not compatible with -q.""")
     parser_list.add_argument(
         "-p", "--parent",
@@ -402,6 +407,10 @@ def cli():
         help="Verify upload success by MD5 checksum after upload"
     )
     parser_upload.add_argument(
+        "-t", "--title",
+        help="""Title for file/folder.  Must be specified if folder is '.' or
+             '..'""")
+    parser_upload.add_argument(
         "-d", "--description",
         help="Description for file/folder")
     parser_upload.add_argument(
@@ -435,12 +444,13 @@ def cli_upload_file(args):
     if os.path.isdir(args.file):
         folder = get_folder_name(args.file)
         if folder in [".", ".."]:
-            error("'.' or '..' cannot be used at the end of folder path")
-        upload_folder(args.drive, args.file, args.description, args.parent,
-                      args.checksum)
+            if not args.title:
+                error("-t must be supplied is folder is '.' or '..'")
+        upload_folder(args.drive, args.file, args.title, args.description,
+                      args.parent, args.checksum)
     else:
-        upload_file(args.drive, args.file, args.description, args.parent,
-                    args.checksum)
+        upload_file(args.drive, args.file, args.title, args.description,
+                    args.parent, args.checksum)
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
