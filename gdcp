@@ -18,7 +18,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 
@@ -127,7 +127,7 @@ def do_setup(location=CONFIG_DIR):
 # -----------------------------------------------------------------------------
 # Google Drive interaction functions
 # -----------------------------------------------------------------------------
-def list_files(drive, query, metadata):
+def list_files(drive, query, metadata, recursive=False):
     log.debug("query = %s" % query)
     file_list = drive.ListFile({"q": query}).GetList()
     for onefile in file_list:
@@ -144,6 +144,10 @@ def list_files(drive, query, metadata):
                 #       "for file %s" % onefile['title'])
                 pass
         print ", ".join(line)
+        if recursive and is_folder(onefile):
+            subquery = "'%s' in parents " % onefile["id"]
+            subquery += "and trashed = false"
+            list_files(drive, subquery, metadata, recursive)
 
 def download_file(drive, file_id):
     downfile = drive.CreateFile({"id": file_id})
@@ -311,19 +315,19 @@ def format_timedelta(t1, t2):
 is not already specified.
 """
 def add_trashed_false_to_query(query):
-    verify_query_trashed(query)
-    trashed_re = re.compile(r"trashed\s*=\s*true|trashed\s*=\s*false")
-    if not trashed_re.search(query):
-        query = query + " and trashed = false"
+    trashed_clauses = get_query_trashed_clauses(query)
+    if len(trashed_clauses) == 0:
+        query += " and trashed = false"
     return query
 
-"""Make sure trashed is specify at most once in query
+"""Get a list of query trash clauses
 """
-def verify_query_trashed(query):
+def get_query_trashed_clauses(query):
     trashed_re = re.compile(r"trashed\s*=\s*true|trashed\s*=\s*false")
-    trash_count = len(trashed_re.findall(query))
-    if trash_count > 1:
-        error("trashed status specified more than once in query")
+    return trashed_re.findall(query)
+
+def is_folder(onefile):
+    return onefile["mimeType"] == "application/vnd.google-apps.folder"
 
 # -----------------------------------------------------------------------------
 # Command-line interface functions
@@ -349,22 +353,15 @@ def cli():
     # List
     parser_list = subparsers.add_parser(
         "list", 
-        help="List files in Google Drive",
+        help="List files in Google Drive.  Trashed files are not excluded.",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_list.add_argument("--verbose",
         default=False,
         action="store_true",
         help="Verbose logging output")
-    parser_list.add_argument("-i", "--include_trashed",
-        default=False,
-        action="store_true",
-        help="""If trashed is not specified in query, list both trashed and
-                untrashed files.  If trashed is not specified in query and 
-                -i is not used, only untrashed files will be listed.  If
-                trashed is specified this option has no effect.""")
     parser_list.add_argument(
         "-q", "--query",
-        default="trashed = false",
+        default="'root' in parents and trashed = false",
         help="""Search query string for file listing.
              See https://developers.google.com/drive/web/search-parameters.""")
     parser_list.add_argument(
@@ -373,6 +370,12 @@ def cli():
         help="""Comma separated list of metadata keys to display.
              See
              https://developers.google.com/drive/v2/reference/files#resource""")
+    parser_list.add_argument(
+        "-r", "--recursive",
+        default=False,
+        action="store_true",
+        help="""Recursively list all files in folders within root folder of
+        query""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -425,9 +428,14 @@ def cli():
     args.func(args)
 
 def cli_list_files(args):
-    if not args.include_trashed:
-        args.query = add_trashed_false_to_query(args.query)
-    list_files(args.drive, args.query, args.metadata)
+    trashed_clauses = get_query_trashed_clauses(args.query)
+    if len(trashed_clauses) > 1:
+        error("Multiple trashed clauses not supported")
+    elif len(trashed_clauses) == 1 and trashed_clauses[0].split()[2] == "true":
+        error("'trashed = true' not supported")
+    else:
+        args.query += " and trashed = false"
+    list_files(args.drive, args.query, args.metadata, args.recursive)
 
 def cli_download_file(args):
     download_file(args.drive, args.id)
