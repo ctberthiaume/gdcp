@@ -135,7 +135,9 @@ def list_all_files(drive, metadata):
         print_one_file(afile, metadata)
 
 def list_root(drive, metadata, depth):
-    if depth > 0:
+    if depth == 0:
+        depth = 1  # special case where we list entries in root to depth of 1
+    if depth >= 0:
         query = "trashed = false and 'root' in parents"
         log.debug("query = '%s'" % query)
         files = drive.ListFile({"q": query}).GetList()
@@ -411,7 +413,7 @@ def cli():
     # List
     parser_list = subparsers.add_parser(
         "list", 
-        help="List files in Google Drive.  Trashed files are not excluded.",
+        help="List files in Google Drive.  Trashed files are listed.",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_list.add_argument("--verbose",
         default=False,
