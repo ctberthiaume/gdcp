@@ -18,7 +18,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 
