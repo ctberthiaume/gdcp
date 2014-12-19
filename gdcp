@@ -127,27 +127,43 @@ def do_setup(location=CONFIG_DIR):
 # -----------------------------------------------------------------------------
 # Google Drive interaction functions
 # -----------------------------------------------------------------------------
-def list_files(drive, query, metadata, recursive=False):
-    log.debug("query = %s" % query)
-    file_list = drive.ListFile({"q": query}).GetList()
-    for onefile in file_list:
-        line = []
-        for meta in metadata.split(","):
-            try:
-                line.append("%s: %s" % (meta, onefile[meta]))
-            except KeyError:
-                # Some files don't have common properties
-                # e.g. folders don't have a fileSize
-                # We don't want to throw an error for these cases
-                # error("Invalid metadata property " +
-                #       "'%s' in -m string '%s' " % (meta, metadata) +
-                #       "for file %s" % onefile['title'])
-                pass
-        print ", ".join(line)
-        if recursive and is_folder(onefile):
-            subquery = "'%s' in parents " % onefile["id"]
-            subquery += "and trashed = false"
-            list_files(drive, subquery, metadata, recursive)
+def list_all_files(drive, metadata):
+    query = "trashed = false"
+    log.debug("query = '%s'" % query)
+    files = drive.ListFile({"q": query}).GetList()
+    for afile in files:
+        print_one_file(afile, metadata)
+
+def list_root(drive, metadata, depth):
+    if depth > 0:
+        query = "trashed = false and 'root' in parents"
+        log.debug("query = '%s'" % query)
+        files = drive.ListFile({"q": query}).GetList()
+        for afile in files:
+            if is_folder(afile):
+                list_file(drive, afile, metadata, depth-1)
+            else:
+                print_one_file(afile, metadata)
+
+def list_file_by_id(drive, file_id, metadata, depth):
+    afile = drive.CreateFile({"id": file_id})
+    list_file(drive, afile, metadata, depth)
+
+"""Print file listings starting at and including afile.
+
+If depth == 0, only print this file.  If depth != 0 and afile is a folder,
+call list_file on each child with depth-1.  Essentially, descend to the bottom
+of the directory tree if depth < 0, stop if depth = 0, and continue for
+depth steps if depth > 0.
+"""
+def list_file(drive, afile, metadata, depth):
+    print_one_file(afile, metadata)
+    if depth != 0 and is_folder(afile):
+        query = "trashed = false and '%s' in parents" % afile["id"]
+        log.debug("query = '%s'" % query)
+        files = drive.ListFile({"q": query}).GetList()
+        for afile in files:
+            list_file(drive, afile, metadata, depth-1)
 
 def download_by_file_id(drive, file_id, root="."):
     downfile = drive.CreateFile({"id": file_id})
@@ -239,6 +255,21 @@ def upload_folder(drive, folder_path, title=None, description=None,
 # -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
+def print_one_file(afile, metadata):
+    line = []
+    for meta in metadata:
+        try:
+            line.append("%s: %s" % (meta, afile[meta]))
+        except KeyError:
+            # Some files don't have common properties
+            # e.g. folders don't have a fileSize
+            # We don't want to throw an error for these cases
+            # error("Invalid metadata property " +
+            #       "'%s' in -m string '%s' " % (meta, metadata) +
+            #       "for file %s" % afile['title'])
+            pass
+    print ", ".join(line)
+
 def create_media_body(file_path, chunksize):
     mimetype = mimetypes.guess_type(file_path)[0]
     if mimetype is None:
@@ -350,8 +381,11 @@ def format_timedelta(t1, t2):
 
     return ": ".join(elapse)
 
-def is_folder(onefile):
-    return onefile["mimeType"] == "application/vnd.google-apps.folder"
+def is_folder(afile):
+    return afile["mimeType"] == "application/vnd.google-apps.folder"
+
+def is_file(onefile):
+    return not is_folder(afile)
 
 # -----------------------------------------------------------------------------
 # Command-line interface functions
@@ -390,25 +424,18 @@ def cli():
              See
              https://developers.google.com/drive/v2/reference/files#resource""")
     parser_list.add_argument(
-        "-q", "--query",
-        help="""Search query string for file listing.  Not compatible with -r,
-             -i, or -a.
-             See https://developers.google.com/drive/web/search-parameters.""")
-    parser_list.add_argument(
-        "-r", "--recursive",
-        default=False,
-        action="store_true",
-        help="""Recursively list all files and folders below root folder of
-        query.  Not compatible with -q or -a.""")
+        "-d", "--depth",
+        default=0,
+        type=int,
+        help="""Depth of a recursive listing of files in a folder.  0 only
+             lists the file or folder itself.  If depth < 0 and then list all
+             descendant files.  Using a large -d with -i can be slow for deeply
+             nested directory hierarchies with many files.  It may be faster to
+             simply run the list sub-command with no arguments to see all
+             files in your Google Drive.""")
     parser_list.add_argument(
         "-i", "--id",
-        help="""File or folder ID.  If not specified all files in the root
-             folder will be listed.  Not compatible with -q or -a.""")
-    parser_list.add_argument(
-        "-a", "--all",
-        default=False,
-        action="store_true",
-        help="""List all files except for trashed""")
+        help="""File or folder ID.  Not compatible with -a.""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -465,18 +492,14 @@ def cli():
     args.func(args)
 
 def cli_list_files(args):
-    if args.query:
-        if args.recursive or args.id or args.all:
-            error("-q cannot be used with -r, -i, or -a")
-    elif args.all:
-        if args.recursive or args.id:
-            error("-a cannot be used with -r, -i, or -q")
-        args.query = "trashed = false"
+    metadata_list = args.metadata.split(",")
+    if args.id is None:  # start at root
+        if args.depth < 0:
+            list_all_files(args.drive, metadata_list)
+        else:
+            list_root(args.drive, metadata_list, args.depth)
     else:
-        if not args.id:
-            args.id = "root"
-        args.query = "'%s' in parents and trashed = false" % args.id
-    list_files(args.drive, args.query, args.metadata, args.recursive)
+        list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
     download_by_file_id(args.drive, args.id)
