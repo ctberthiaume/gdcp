@@ -179,10 +179,11 @@ def download_file(drive, afile, checksum=False, root="."):
         downpath = os.path.join(root, afile["title"])
         file_size = int(afile["fileSize"])
         url = afile["downloadUrl"]
-        log.info("Downloading %s, size = %i" % (downpath, file_size))
+        log.info("Downloading %s, size = %i, md5 = %s" % 
+                 (downpath, file_size, afile["md5Checksum"]))
         if url is None or len(url) == 0:
             error("%s is not downloadable" % afile["title"])
-        log.debug("Download url = " + url)
+        #log.debug("Download url = " + url)
 
         bytes_received = -1  # so +1 in first loop iteration increments to 0
         with open(downpath, "wb") as fh:
