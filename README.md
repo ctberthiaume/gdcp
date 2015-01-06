@@ -1,4 +1,12 @@
-# gdcp (Google Drive cp) - An scp-like tool to interact with Google Drive from the command-line
+# gdcp
+An scp-like tool to interact with Google Drive from the command-line (Google Drive cp).
+
+Notable features:
+
+* supports large file uploads and downloads
+* optional MD5 checksum verification for uploads and downloads
+* recursive folder upload and download
+* recursive depth-limited folder listing
 
 ## Installation
 `gdcp` is a python script which depends on
