@@ -21,6 +21,7 @@ from pydrive.drive import GoogleDrive
 VERSION = "0.3.1"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
+CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
 
 
 log = logging.getLogger(PROJ)
@@ -167,19 +168,49 @@ def list_file(drive, afile, metadata, depth):
         for afile in files:
             list_file(drive, afile, metadata, depth-1)
 
-def download_by_file_id(drive, file_id, root="."):
+def download_by_file_id(drive, file_id, checksum=False, root="."):
     downfile = drive.CreateFile({"id": file_id})
-    download_file(drive, downfile, root)
+    download_file(drive, downfile, checksum, root)
  
-def download_file(drive, gfile, root="."):
-    if is_folder(gfile):
-        download_folder(drive, gfile, root)
+def download_file(drive, afile, checksum=False, root="."):
+    if is_folder(afile):
+        download_folder(drive, afile, root)
     else:
-        downpath = os.path.join(root, gfile["title"])
-        log.info("Downloading %s" % downpath)
-        gfile.GetContentFile(downpath)
+        downpath = os.path.join(root, afile["title"])
+        file_size = int(afile["fileSize"])
+        url = afile["downloadUrl"]
+        log.info("Downloading %s, size = %i" % (downpath, file_size))
+        if url is None or len(url) == 0:
+            error("%s is not downloadable" % afile["title"])
+        log.debug("Download url = " + url)
 
-def download_folder(drive, gfolder, root="."):
+        bytes_received = -1  # so +1 in first loop iteration increments to 0
+        with open(downpath, "wb") as fh:
+            while bytes_received < file_size:
+                bytes_start = bytes_received + 1
+                bytes_end = min(file_size, bytes_received + CHUNKSIZE)
+                headers = {
+                    "range": "bytes=%i-%i" % (bytes_start, bytes_end),
+                    "content-type": "application/octet-stream"
+                }
+                resp, content = drive.auth.service._http.request(
+                    url, method="GET", headers=headers)
+                # TODO CTB: should we retry as with resumable uploads given
+                # certain non-fatal errors?
+                if resp.status in [206, 200]:
+                    fh.write(content)
+                    log.debug(
+                        "Downloaded bytes %i-%i with status %s" %
+                        (bytes_start, bytes_end, resp.status))
+                    bytes_received += CHUNKSIZE
+                else:
+                    fh.close()
+                    os.remove(downpath)
+                    error("An error occurred: %i" % resp.status)
+        if checksum:
+            check_md5(downpath, afile["md5Checksum"])
+
+def download_folder(drive, gfolder, checksum=False, root="."):
     folder_path = os.path.join(root, gfolder["title"])
     log.info("Creating folder %s" % folder_path)
     create_lfolder(folder_path)
@@ -187,16 +218,15 @@ def download_folder(drive, gfolder, root="."):
     file_list = drive.ListFile({"q": query}).GetList()
     for onefile in file_list:
         if is_folder(onefile):
-            download_folder(drive, onefile, root=folder_path)
+            download_folder(drive, onefile, checksum, root=folder_path)
         else:
-            download_file(drive, onefile, root=folder_path)
+            download_file(drive, onefile, checksum, root=folder_path)
 
 def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 checksum=False):
     if title is None:
         title = os.path.basename(file_path)
-    chunksize = 2 ** 20 * 250  # 250 MiB chunks
-    media_body = create_media_body(file_path, chunksize)
+    media_body = create_media_body(file_path, CHUNKSIZE)
     body = create_body(file_path, title, description, parent_id)
     request = drive.auth.service.files().insert(
         body=body,
@@ -301,9 +331,10 @@ def check_md5(file_path, response_md5):
               output.rstrip())
     md5 = output.split()[-1]
     if md5 == response_md5:
-        log.info("Upload verified with MD5 checksum %s" % response_md5)
+        log.info("MD5 checksum verification successful.  %s (local) == %s" %
+                 (md5, response_md5))
     else:
-        error("MD5 checksum verification failed: %s (local) != %s" %
+        error("MD5 checksum verification failed.  %s (local) != %s" %
               (md5, response_md5))
 
 # Return iterable of items in files joined to join_path
@@ -453,6 +484,12 @@ def cli():
         "-i", "--id",
         help="File ID")
     parser_download.set_defaults(func=cli_download_file)
+    parser_download.add_argument(
+        "-c", "--checksum",
+        default=False,
+        action="store_true",
+        help="Verify download success by MD5 checksum after download"
+    )
 
     # Upload
     parser_upload = subparsers.add_parser(
@@ -504,7 +541,7 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    download_by_file_id(args.drive, args.id)
+    download_by_file_id(args.drive, args.id, args.checksum)
     log.info("Download successful")
 
 def cli_upload_file(args):
