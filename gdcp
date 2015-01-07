@@ -226,46 +226,49 @@ def download_folder(drive, gfolder, checksum=False, root="."):
 def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 checksum=False):
     if title is None:
-        title = os.path.basename(file_path)
+        title = title_from_path(file_path)
     mimetype = guess_mimetype(file_path)
     media_body = create_media_body(file_path, CHUNKSIZE, mimetype)
     body = create_body(title, description, mimetype, parent_id)
-    request = drive.auth.service.files().insert(
-        body=body,
-        media_body=media_body)
-    response = None
-    retries = 0
-    retry_limit = 6
-    prev_progress = 0.00
+    file_size = os.path.getsize(file_path)
 
+    log.info("Uploading %s, mimeType=%s" % (file_path, body["mimeType"]))
     t1 = datetime.datetime.now()
-    log.info("Uploading %s, mimeType=%s" %
-             (file_path, media_body.mimetype()))
+    if file_size == 0:
+        response = drive.auth.service.files().insert(body=body).execute()
+    else:
+        request = drive.auth.service.files().insert(
+            body=body,
+            media_body=media_body)
+        response = None
+        retries = 0
+        retry_limit = 6
+        prev_progress = 0.00
 
-    while response is None:
-        try:
-            status, response = request.next_chunk()
-            if status:
-                cur_progress = status.progress() * 100
-                # Only print progress every 1% or greater
-                if cur_progress - prev_progress > 1.0:
-                    log.info("Uploaded %.02f%%" % cur_progress)
-                    prev_progress = cur_progress
-        except apiclient.errors.HttpError, e:
-            if e.resp.status in [404]:
-                error("Received HTTP error 404, aborting")
-            if e.resp.status in [500, 502, 503, 504]:
-                if retries > retry_limit:
-                    error("Too many retries, aborting")
+        while response is None:
+            try:
+                status, response = request.next_chunk()
+                if status:
+                    cur_progress = status.progress() * 100
+                    # Only print progress every 1% or greater
+                    if cur_progress - prev_progress > 1.0:
+                        log.info("Uploaded %.02f%%" % cur_progress)
+                        prev_progress = cur_progress
+            except apiclient.errors.HttpError, e:
+                if e.resp.status in [500, 502, 503, 504]:
+                    if retries > retry_limit:
+                        error("Too many retries, aborting")
+                    else:
+                        delay = 2 ** retries
+                        log.warning(
+                            "HTTP error code %d, retrying in %d seconds ..." %
+                            (e.resp.status, delay))
+                        time.sleep(delay)
+                        retries += 1
                 else:
-                    delay = 2 ** retries
-                    log.warning(
-                        "HTTP error code %d, retrying in %d seconds ..." %
-                        (e.resp.status, delay))
-                    time.sleep(delay)
-                    retries += 1
-    t2 = datetime.datetime.now()
+                    error("Received HTTP error %i, aborting" % e.resp.status)
 
+    t2 = datetime.datetime.now()
     log.info("Uploaded 100.00%% in %s" % format_timedelta(t1, t2))
 
     if checksum:
@@ -274,7 +277,7 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
 def upload_folder(drive, folder_path, title=None, description=None,
                   parent_id=None, checksum=False):
     if title is None:
-        title = get_folder_name(folder_path)
+        title = title_from_path(folder_path)
     folder_id = create_gfolder(drive, title, description, parent_id)
 
     allfiles = path_join(folder_path, os.listdir(folder_path))
@@ -292,7 +295,8 @@ def print_one_file(afile, metadata):
     line = []
     for meta in metadata:
         try:
-            line.append("%s: %s" % (meta, afile[meta]))
+
+            line.append("%s: %s" % (meta, remove_r_n(afile[meta])))
         except KeyError:
             # Some files don't have common properties
             # e.g. folders don't have a fileSize
@@ -302,6 +306,11 @@ def print_one_file(afile, metadata):
             #       "for file %s" % afile['title'])
             pass
     print ", ".join(line)
+
+def remove_r_n(some_string):
+    some_string = some_string.replace("\r", "^M")
+    some_string = some_string.replace("\n", "^M")
+    return some_string
 
 def create_media_body(file_path, chunksize, mimetype):
     media_body = apiclient.http.MediaFileUpload(
@@ -367,6 +376,24 @@ def get_folder_name(folder_path):
     while not parts[i]:
         i -= 1
     return parts[i]
+
+"""Get a sanitized title for a file or folder.
+"""
+def title_from_path(file_path):
+    file_path = os.path.abspath(file_path)  # resolve things like /foo/../foo
+
+    # Special case for root
+    if file_path == "/":
+        return "/"
+
+    # Remove trailing "/"s
+    i = len(file_path) - 1
+    while file_path[i] == "/":
+        i -= 1
+    file_path = file_path[:i+1]
+
+    title = file_path.split("/")[-1]
+    return title
 
 """Create folder in Google Drive
 """
@@ -559,10 +586,10 @@ def cli_upload_file(args):
     if os.path.islink(args.file):
         error("Uploading symbolic links not supported")
     if os.path.isdir(args.file):
-        folder = get_folder_name(args.file)
-        if folder in [".", ".."]:
+        folder = title_from_path(args.file)
+        if folder in [".", "..", "/"]:
             if not args.title:
-                error("-t must be supplied is folder is '.' or '..'")
+                error("-t must be supplied if folder is '.', '..', or '/'")
         upload_folder(args.drive, args.file, args.title, args.description,
                       args.parent, args.checksum)
     else:
