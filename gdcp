@@ -18,7 +18,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
@@ -136,17 +136,13 @@ def list_all_files(drive, metadata):
         print_one_file(afile, metadata)
 
 def list_root(drive, metadata, depth):
-    if depth == 0:
-        depth = 1  # special case where we list entries in root to depth of 1
-    if depth >= 0:
-        query = "trashed = false and 'root' in parents"
-        log.debug("query = '%s'" % query)
-        files = drive.ListFile({"q": query}).GetList()
-        for afile in files:
-            if is_folder(afile):
-                list_file(drive, afile, metadata, depth-1)
-            else:
-                print_one_file(afile, metadata)
+    query = "trashed = false and 'root' in parents"
+    log.debug("query = '%s'" % query)
+    files = drive.ListFile({"q": query}).GetList()
+    for subfile in files:
+        print_one_file(subfile, metadata)
+        if is_folder(subfile):
+            list_file(drive, subfile, metadata, depth-1)
 
 def list_file_by_id(drive, file_id, metadata, depth):
     afile = drive.CreateFile({"id": file_id})
@@ -159,14 +155,18 @@ call list_file on each child with depth-1.  Essentially, descend to the bottom
 of the directory tree if depth < 0, stop if depth = 0, and continue for
 depth steps if depth > 0.
 """
-def list_file(drive, afile, metadata, depth):
-    print_one_file(afile, metadata)
-    if depth != 0 and is_folder(afile):
-        query = "trashed = false and '%s' in parents" % afile["id"]
-        log.debug("query = '%s'" % query)
-        files = drive.ListFile({"q": query}).GetList()
-        for afile in files:
-            list_file(drive, afile, metadata, depth-1)
+def list_file(drive, curfile, metadata, depth):
+    if depth >= 0:
+        if is_folder(curfile):
+            query = "trashed = false and '%s' in parents" % curfile["id"]
+            log.debug("query = '%s'" % query)
+            files = drive.ListFile({"q": query}).GetList()
+            for subfile in files:
+                print_one_file(subfile, metadata)
+                if is_folder(subfile):
+                    list_file(drive, subfile, metadata, depth-1)
+        else:
+            print_one_file(curfile, metadata)
 
 def download_by_file_id(drive, file_id, checksum=False, root="."):
     downfile = drive.CreateFile({"id": file_id})
@@ -462,14 +462,19 @@ def cli():
         default=0,
         type=int,
         help="""Depth of a recursive listing of files in a folder.  0 only
-             lists the file or folder itself.  If depth < 0 and then list all
-             descendant files.  Using a large -d with -i can be slow for deeply
-             nested directory hierarchies with many files.  It may be faster to
-             simply run the list sub-command with no arguments to see all
-             files in your Google Drive.""")
+             lists the file or folder itself.  Depth must be >= 0.  Using a large
+             -d value can be slow for deeply nested directory hierarchies with many
+             files.""")
+    parser_list.add_argument(
+        "-a", "--all",
+        default=False,
+        action="store_true",
+        help="""List all files except for trashed.  Much faster than specifying
+                a -d value < 0.""")
     parser_list.add_argument(
         "-i", "--id",
-        help="""File or folder ID.  Not compatible with -a.""")
+        help="""File or folder ID.  If not specified listing starts at Google
+             Drive root.""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -533,12 +538,16 @@ def cli():
 
 def cli_list_files(args):
     metadata_list = args.metadata.split(",")
+    if args.depth < 0:
+        error("list -d must be >= 0")
     if args.id is None:  # start at root
-        if args.depth < 0:
+        if args.all:
             list_all_files(args.drive, metadata_list)
         else:
             list_root(args.drive, metadata_list, args.depth)
     else:
+        if args.all:
+            error("list -a not compatible with -d")
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
