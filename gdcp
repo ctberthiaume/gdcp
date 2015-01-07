@@ -227,8 +227,9 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 checksum=False):
     if title is None:
         title = os.path.basename(file_path)
-    media_body = create_media_body(file_path, CHUNKSIZE)
-    body = create_body(file_path, title, description, parent_id)
+    mimetype = guess_mimetype(file_path)
+    media_body = create_media_body(file_path, CHUNKSIZE, mimetype)
+    body = create_body(title, description, mimetype, parent_id)
     request = drive.auth.service.files().insert(
         body=body,
         media_body=media_body)
@@ -275,7 +276,6 @@ def upload_folder(drive, folder_path, title=None, description=None,
     if title is None:
         title = get_folder_name(folder_path)
     folder_id = create_gfolder(drive, title, description, parent_id)
-    log.info("Created folder for %s" % folder_path)
 
     allfiles = path_join(folder_path, os.listdir(folder_path))
     files = file_filter(allfiles)
@@ -303,10 +303,7 @@ def print_one_file(afile, metadata):
             pass
     print ", ".join(line)
 
-def create_media_body(file_path, chunksize):
-    mimetype = mimetypes.guess_type(file_path)[0]
-    if mimetype is None:
-        mimetype = "application/octet-stream"
+def create_media_body(file_path, chunksize, mimetype):
     media_body = apiclient.http.MediaFileUpload(
         file_path,
         chunksize=chunksize,
@@ -314,13 +311,23 @@ def create_media_body(file_path, chunksize):
         mimetype=mimetype)
     return media_body
 
-def create_body(file_path, title, description=None, parent_id=None):
+def create_body(title, description=None, mimetype=None, parent_id=None):
     body = {"title": title}
+    if mimetype is None:
+        body["mimeType"] = "application/vnd.google-apps.folder"
+    else:
+        body["mimeType"] = mimetype
     if description is not None:
         body["description"] = description
     if parent_id is not None:
         body["parents"] = [{"id": parent_id}]
     return body
+
+def guess_mimetype(file_path):
+    mimetype = mimetypes.guess_type(file_path)[0]
+    if mimetype is None:
+        mimetype = "application/octet-stream"
+    return mimetype
 
 def check_md5(file_path, response_md5):
     log.info("Calculating MD5 checksum for %s" % file_path)
@@ -364,16 +371,10 @@ def get_folder_name(folder_path):
 """Create folder in Google Drive
 """
 def create_gfolder(drive, title, description=None, parent_id=None):
-    metadata = {
-        "title": title,
-        "mimeType": "application/vnd.google-apps.folder"
-    }
-    if description is not None:
-        metadata["description"] = description
-    if parent_id is not None:
-        metadata["parents"] = [{"id": parent_id}]
-    folder = drive.CreateFile(metadata)
-    folder.Upload()
+    body = create_body(title, description, None, parent_id)
+    log.debug("About to create folder %s" % body)
+    folder = drive.auth.service.files().insert(body=body).execute()
+    log.info("Created folder %s" % title)
     return folder["id"]
 
 """Create a local folder
