@@ -370,13 +370,6 @@ def dir_filter(files):
         lambda x: not os.path.islink(x) and os.path.isdir(x),
         files)
 
-def get_folder_name(folder_path):
-    parts = folder_path.split("/")
-    i = -1
-    while not parts[i]:
-        i -= 1
-    return parts[i]
-
 """Get a sanitized title for a file or folder.
 """
 def title_from_path(file_path):
