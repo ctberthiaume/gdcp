@@ -185,11 +185,13 @@ def download_file(drive, afile, checksum=False, root="."):
             error("%s is not downloadable" % afile["title"])
         #log.debug("Download url = " + url)
 
+        t1 = datetime.datetime.now()
         bytes_received = -1  # so +1 in first loop iteration increments to 0
+        prev_progress = 0.00
         with open(downpath, "wb") as fh:
             while bytes_received < file_size:
                 bytes_start = bytes_received + 1
-                bytes_end = min(file_size, bytes_received + CHUNKSIZE)
+                bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
                 headers = {
                     "range": "bytes=%i-%i" % (bytes_start, bytes_end),
                     "content-type": "application/octet-stream"
@@ -204,10 +206,24 @@ def download_file(drive, afile, checksum=False, root="."):
                         "Downloaded bytes %i-%i with status %s" %
                         (bytes_start, bytes_end, resp.status))
                     bytes_received += CHUNKSIZE
+                    cur_progress = float(bytes_received) / file_size * 100
+                    # Only print progress every 5% or greater
+                    if cur_progress - prev_progress > 5.0 and cur_progress < 100.00:
+                        t_tmp = datetime.datetime.now()
+                        rate = calc_transfer_rate(t1, t_tmp, bytes_received)
+                        log.info("Downloaded %.02f%% (%.02fMB/s)" %
+                                 (cur_progress, rate))
+                        prev_progress = cur_progress
                 else:
                     fh.close()
                     os.remove(downpath)
                     error("An error occurred: %i" % resp.status)
+
+        t2 = datetime.datetime.now()
+        rate = calc_transfer_rate(t1, t2, file_size)
+        log.info("Downloaded 100.00%%.  %i bytes in %s (%.02fMB/s)" % 
+             (file_size, format_timedelta(t1, t2), rate))
+
         if checksum:
             check_md5(downpath, afile["md5Checksum"])
 
@@ -244,15 +260,20 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
         retries = 0
         retry_limit = 6
         prev_progress = 0.00
+        bytes_sent = 0
 
         while response is None:
             try:
                 status, response = request.next_chunk()
                 if status:
                     cur_progress = status.progress() * 100
-                    # Only print progress every 1% or greater
-                    if cur_progress - prev_progress > 1.0:
-                        log.info("Uploaded %.02f%%" % cur_progress)
+                    bytes_sent = min(bytes_sent + CHUNKSIZE, file_size)
+                    # Only print progress every 5% or greater
+                    if cur_progress - prev_progress > 5.0 and cur_progress < 100.00:
+                        t_tmp = datetime.datetime.now()
+                        rate = calc_transfer_rate(t1, t_tmp, bytes_sent)
+                        log.info("Uploaded %.02f%% (%.02fMB/s)" % 
+                                 (cur_progress, rate))
                         prev_progress = cur_progress
             except apiclient.errors.HttpError, e:
                 if e.resp.status in [500, 502, 503, 504]:
@@ -269,7 +290,9 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                     error("Received HTTP error %i, aborting" % e.resp.status)
 
     t2 = datetime.datetime.now()
-    log.info("Uploaded 100.00%% in %s" % format_timedelta(t1, t2))
+    rate = calc_transfer_rate(t1, t2, file_size)
+    log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s)" % 
+             (file_size, format_timedelta(t1, t2), rate))
 
     if checksum:
         check_md5(file_path, response["md5Checksum"])
@@ -417,24 +440,39 @@ def error(msg):
 
 def format_timedelta(t1, t2):
     delta = t2 - t1
-    delta_s = int(delta.total_seconds())
+    delta_s = delta.total_seconds()
     elapse = []
-    days = delta_s / (24 * 60 * 60)
-    if days:
-        elapse.append("%id" % days)
-    delta_s -= days * 24 * 60 * 60
-    hours = delta_s / (60 * 60)
-    if hours:
-        elapse.append("%ih" % hours)
-    delta_s -= hours * 60 * 60
-    minutes = delta_s / 60
-    if minutes:
-        elapse.append("%im" % minutes)
-    delta_s -= minutes * 60
-    seconds = delta_s
-    elapse.append("%is" % seconds)
 
-    return ": ".join(elapse)
+    days = delta_s / (24 * 60 * 60)
+    if int(days) > 0:
+        elapse.append("%id" % int(days))
+        delta_s -= days * 24 * 60 * 60
+
+    hours = delta_s / (60 * 60)
+    if int(hours):
+        elapse.append("%ih" % int(hours))
+        delta_s -= hours * 60 * 60
+
+    minutes = delta_s / 60
+    if int(minutes):
+        elapse.append("%im" % int(minutes))
+        delta_s -= minutes * 60
+
+    seconds = delta_s
+    elapse.append("%.02fs" % seconds)
+
+    return "".join(elapse)
+
+"""Return transfer rate for transfer of file_size bytes between t1 and t2
+"""
+def calc_transfer_rate(t1, t2, file_size):
+    delta = t2 - t1
+    delta_s = delta.total_seconds()
+    try:
+        rate = float(file_size) / delta_s / 10**6  # MB/s
+    except ZeroDivisionError:
+        rate = 0.00
+    return rate
 
 def is_folder(afile):
     return afile["mimeType"] == "application/vnd.google-apps.folder"
