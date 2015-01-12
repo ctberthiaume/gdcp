@@ -18,7 +18,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.4.3"
+VERSION = "0.5.0"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
@@ -167,13 +167,13 @@ def list_file(drive, curfile, metadata, depth):
         else:
             print_one_file(curfile, metadata)
 
-def download_by_file_id(drive, file_id, checksum=False, root="."):
+def download_by_file_id(drive, file_id, checksum=True, root="."):
     downfile = drive.CreateFile({"id": file_id})
     download_file(drive, downfile, checksum, root)
  
-def download_file(drive, afile, checksum=False, root="."):
+def download_file(drive, afile, checksum=True, root="."):
     if is_folder(afile):
-        download_folder(drive, afile, root)
+        download_folder(drive, afile, checksum, root)
     else:
         downpath = os.path.join(root, afile["title"])
         file_size = int(afile["fileSize"])
@@ -226,7 +226,7 @@ def download_file(drive, afile, checksum=False, root="."):
         if checksum:
             check_md5(downpath, afile["md5Checksum"])
 
-def download_folder(drive, gfolder, checksum=False, root="."):
+def download_folder(drive, gfolder, checksum=True, root="."):
     folder_path = os.path.join(root, gfolder["title"])
     log.info("Creating folder %s" % folder_path)
     create_lfolder(folder_path)
@@ -242,7 +242,7 @@ def download_folder(drive, gfolder, checksum=False, root="."):
 #upload_fails = {"count": 8}
 
 def upload_file(drive, file_path, title=None, description=None, parent_id=None,
-                checksum=False):
+                checksum=True):
     if title is None:
         title = title_from_path(file_path)
     mimetype = guess_mimetype(file_path)
@@ -364,7 +364,7 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
     return failed
 
 def upload_folder(drive, folder_path, title=None, description=None,
-                  parent_id=None, checksum=False):
+                  parent_id=None, checksum=True):
     if title is None:
         title = title_from_path(folder_path)
     folder_id = create_gfolder(drive, title, description, parent_id)
@@ -440,7 +440,6 @@ def guess_mimetype(file_path):
     return mimetype
 
 def check_md5(file_path, response_md5):
-    passed = False
     log.info("Calculating MD5 checksum for %s" % file_path)
     try:
         output = subprocess.check_output(["openssl", "md5", file_path],
@@ -454,6 +453,7 @@ def check_md5(file_path, response_md5):
                  (md5, response_md5))
         passed = True
     else:
+        passed = False
         log.warning("MD5 failed.  %s (local) != %s" %
                     (md5, response_md5))
     return passed
@@ -631,10 +631,10 @@ def cli():
         help="File ID")
     parser_download.set_defaults(func=cli_download_file)
     parser_download.add_argument(
-        "-c", "--checksum",
+        "-n", "--no_checksum",
         default=False,
         action="store_true",
-        help="Verify download success by MD5 checksum after download"
+        help="Skip MD5 checksum verification after download"
     )
 
     # Upload
@@ -652,10 +652,10 @@ def cli():
         help="""Parent ID, i.e. containing folder ID.  If not specified
              file will be placed in root folder.""")
     parser_upload.add_argument(
-        "-c", "--checksum",
+        "-n", "--no_checksum",
         default=False,
         action="store_true",
-        help="Verify upload success by MD5 checksum after upload"
+        help="Skip MD5 checksum verification after upload"
     )
     parser_upload.add_argument(
         "-t", "--title",
@@ -691,7 +691,7 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    download_by_file_id(args.drive, args.id, args.checksum)
+    download_by_file_id(args.drive, args.id, not args.no_checksum)
     log.info("Download successful")
 
 def cli_upload_file(args):
@@ -703,10 +703,12 @@ def cli_upload_file(args):
             if not args.title:
                 error("-t must be supplied if folder is '.', '..', or '/'")
         failed = upload_folder(args.drive, args.file, args.title,
-                               args.description, args.parent, args.checksum)
+                               args.description, args.parent,
+                               not args.no_checksum)
     else:
         failed = upload_file(args.drive, args.file, args.title,
-                             args.description, args.parent, args.checksum)
+                             args.description, args.parent,
+                             not args.no_checksum)
 
     # If any files failed to upload, retry, then print the
     # files if any still don't upload
