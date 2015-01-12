@@ -169,11 +169,11 @@ def list_file(drive, curfile, metadata, depth):
 
 def download_by_file_id(drive, file_id, checksum=True, root="."):
     downfile = drive.CreateFile({"id": file_id})
-    download_file(drive, downfile, checksum, root)
+    download_file(drive, downfile, checksum=checksum, root=root)
  
 def download_file(drive, afile, checksum=True, root="."):
     if is_folder(afile):
-        download_folder(drive, afile, checksum, root)
+        download_folder(drive, afile, checksum=checksum, root=root)
     else:
         downpath = os.path.join(root, afile["title"])
         file_size = int(afile["fileSize"])
@@ -234,9 +234,9 @@ def download_folder(drive, gfolder, checksum=True, root="."):
     file_list = drive.ListFile({"q": query}).GetList()
     for onefile in file_list:
         if is_folder(onefile):
-            download_folder(drive, onefile, checksum, root=folder_path)
+            download_folder(drive, onefile, checksum=checksum, root=folder_path)
         else:
-            download_file(drive, onefile, checksum, root=folder_path)
+            download_file(drive, onefile, checksum=checksum, root=folder_path)
 
 # Test upload_file error recovery by forcing some file uploads to fail
 #upload_fails = {"count": 8}
