@@ -18,10 +18,10 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
-CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
+CHUNKSIZE = 2 ** 20 * 20  # 20 MiB chunks
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
@@ -256,17 +256,72 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
     # Track failed uploads or MD5 checksum verifications
     failed = {"HTTP": [], "MD5": []}
 
+    complete_retries = 0
+    resumable_retries = 0
+    retry_limit = 6
+    response = None
+
     if file_size == 0:
-        response = drive.auth.service.files().insert(body=body).execute()
+        request = drive.auth.service.files().insert(body=body)
+        while response is None:
+            try:
+                response = request.execute()
+            except apiclient.errors.HttpError as e:
+                if e.resp.status in [404, 410, 500, 502, 503, 504]:
+                    if complete_retries < retry_limit:
+                        # start upload all over
+                        log.warning("HTTP error %d, restarting upload" %
+                                    e.resp.status)
+                        complete_retries += 1
+                        request = drive.auth.service.files().insert(body=body)
+                    else:
+                        # No more complete retries left, abort
+                        msg = "HTTP error %i.  " % e.resp.status
+                        msg += "Too many retries, aborting"
+                        log.warning(msg)
+                        failed["HTTP"] = [
+                            {
+                                "drive": drive,
+                                "file_path": file_path,
+                                "parent_id": parent_id,
+                                "title": title,
+                                "description": description,
+                                "checksum": checksum
+                            }
+                        ]
+                        break
+                else:
+                    # Don't know how to handle this error, abort
+                    log.warning("HTTP error %i, aborting" % e.resp.status)
+                    failed["HTTP"] = [
+                        {
+                            "drive": drive,
+                            "file_path": file_path,
+                            "parent_id": parent_id,
+                            "title": title,
+                            "description": description,
+                            "checksum": checksum
+                        }
+                    ]
+                    break
+            except httplib2.HttpLib2Error as e:
+                # Don't know how to handle this error, abort
+                log.warning("Error %s, aborting" % e)
+                failed["HTTP"] = [
+                    {
+                        "drive": drive,
+                        "file_path": file_path,
+                        "parent_id": parent_id,
+                        "title": title,
+                        "description": description,
+                        "checksum": checksum
+                    }
+                ]
+                break
     else:
         request = drive.auth.service.files().insert(
             body=body,
             media_body=media_body)
-        response = None
-        complete_retries = 0
-        complete_retry_limit = 1
-        resumable_retries = 0
-        resumable_retry_limit = 6
         prev_progress = 0.00
         bytes_sent = 0
 
@@ -277,6 +332,7 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 #    raise Exception("fake exception")
 
                 status, response = request.next_chunk()
+
                 if status:
                     cur_progress = status.progress() * 100
                     bytes_sent = min(bytes_sent + CHUNKSIZE, file_size)
@@ -291,7 +347,7 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
             #except Exception as e:
             except apiclient.errors.HttpError as e:
                 if e.resp.status in [404, 410]:
-                    if complete_retries < complete_retry_limit:
+                    if complete_retries < retry_limit:
                         # start upload all over
                         log.warning("HTTP error %d, restarting upload" %
                                     e.resp.status)
@@ -304,12 +360,30 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                             media_body=media_body)
                         delay = 2 ** complete_retries
                         time.sleep(delay)
+                    else:
+                        # No more complete retries left, abort
+                        msg = "HTTP error %i.  " % e.resp.status
+                        msg += "Too many retries, aborting"
+                        log.warning(msg)
+                        failed["HTTP"] = [
+                            {
+                                "drive": drive,
+                                "file_path": file_path,
+                                "parent_id": parent_id,
+                                "title": title,
+                                "description": description,
+                                "checksum": checksum
+                            }
+                        ]
+                        break
                 elif e.resp.status in [500, 502, 503, 504]:
                 #elif False:
                     # Retry this chunk after a delay
-                    if resumable_retries > resumable_retry_limit:
+                    if resumable_retries > retry_limit:
                         # No more retries left, abort
-                        log.warning("Too many retries, aborting")
+                        msg = "HTTP error %i.  " % e.resp.status
+                        msg += "Too many retries, aborting"
+                        log.warning(msg)
                         failed["HTTP"] = [
                             {
                                 "drive": drive,
@@ -341,6 +415,20 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                         }
                     ]
                     break
+            except httplib2.HttpLib2Error as e:
+                # Don't know how to handle this error, abort
+                log.warning("Error %s, aborting" % e)
+                failed["HTTP"] = [
+                    {
+                        "drive": drive,
+                        "file_path": file_path,
+                        "parent_id": parent_id,
+                        "title": title,
+                        "description": description,
+                        "checksum": checksum
+                    }
+                ]
+                break
 
     if len(failed["HTTP"]) == 0:
         t2 = datetime.datetime.now()
@@ -629,13 +717,13 @@ def cli():
     parser_download.add_argument(
         "-i", "--id",
         help="File ID")
-    parser_download.set_defaults(func=cli_download_file)
     parser_download.add_argument(
         "-n", "--no_checksum",
         default=False,
         action="store_true",
         help="Skip MD5 checksum verification after download"
     )
+    parser_download.set_defaults(func=cli_download_file)
 
     # Upload
     parser_upload = subparsers.add_parser(
