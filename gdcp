@@ -18,7 +18,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 CHUNKSIZE = 2 ** 20 * 20  # 20 MiB chunks
@@ -140,7 +140,7 @@ def list_root(drive, metadata, depth):
     files = drive.ListFile({"q": query}).GetList()
     for subfile in files:
         print_one_file(subfile, metadata)
-        if is_folder(subfile):
+        if is_google_folder(subfile):
             list_file(drive, subfile, metadata, depth-1)
 
 def list_file_by_id(drive, file_id, metadata, depth):
@@ -156,13 +156,13 @@ depth steps if depth > 0.
 """
 def list_file(drive, curfile, metadata, depth):
     if depth >= 0:
-        if is_folder(curfile):
+        if is_google_folder(curfile):
             query = "trashed = false and '%s' in parents" % curfile["id"]
             log.debug("query = '%s'" % query)
             files = drive.ListFile({"q": query}).GetList()
             for subfile in files:
                 print_one_file(subfile, metadata)
-                if is_folder(subfile):
+                if is_google_folder(subfile):
                     list_file(drive, subfile, metadata, depth-1)
         else:
             print_one_file(curfile, metadata)
@@ -176,10 +176,13 @@ def download_file(drive, afile, checksum=True, root="."):
     # Track failed downloads or MD5 checksum verifications
     failed = {"HTTP": [], "MD5": []}
 
-    if is_folder(afile):
+    if not os.path.exists(root):
+    	create_local_folder(root)
+    	
+    if is_google_folder(afile):
         folder_path = os.path.join(root, afile["title"])
         log.info("Creating folder %s" % folder_path)
-        create_lfolder(folder_path)
+        create_local_folder(folder_path)
         query = "'%s' in parents and trashed = false" % afile["id"]
         file_list = drive.ListFile({"q": query}).GetList()
         for onefile in file_list:
@@ -490,7 +493,7 @@ def upload_folder(drive, folder_path, title=None, description=None,
                   parent_id=None, checksum=True):
     if title is None:
         title = title_from_path(folder_path)
-    folder_id = create_gfolder(drive, title, description, parent_id)
+    folder_id = create_google_folder(drive, title, description, parent_id)
 
     allfiles = path_join(folder_path, os.listdir(folder_path))
     files = file_filter(allfiles)
@@ -617,7 +620,7 @@ def title_from_path(file_path):
 
 """Create folder in Google Drive
 """
-def create_gfolder(drive, title, description=None, parent_id=None):
+def create_google_folder(drive, title, description=None, parent_id=None):
     body = create_body(title, description, None, parent_id)
     log.debug("About to create folder %s" % body)
     folder = drive.auth.service.files().insert(body=body).execute()
@@ -626,11 +629,11 @@ def create_gfolder(drive, title, description=None, parent_id=None):
 
 """Create a local folder
 """
-def create_lfolder(folder_path):
+def create_local_folder(folder_path):
     try:
-        os.mkdir(folder_path)
+        os.makedirs(folder_path)
     except OSError as e:
-        error("Could not create directory %s" % folder_path)
+        error("Could not create directory %s. Perhaps it already exists." % folder_path)
 
 def chdir(folder_path):
     try:
@@ -678,11 +681,9 @@ def calc_transfer_rate(t1, t2, file_size):
         rate = 0.00
     return rate
 
-def is_folder(afile):
+def is_google_folder(afile):
     return afile["mimeType"] == "application/vnd.google-apps.folder"
 
-def is_file(onefile):
-    return not is_folder(afile)
 
 # -----------------------------------------------------------------------------
 # Command-line interface functions
@@ -759,6 +760,10 @@ def cli():
         action="store_true",
         help="Skip MD5 checksum verification after download"
     )
+    parser_download.add_argument(
+        "target",
+        help="Destination directory"
+    )
     parser_download.set_defaults(func=cli_download_file)
 
     # Upload
@@ -816,7 +821,7 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    failed = download_by_file_id(args.drive, args.id, not args.no_checksum)
+    failed = download_by_file_id(args.drive, args.id, not args.no_checksum, args.target)
 
     # If any files failed to download, retry, then print the
     # files if any still don't download
