@@ -169,11 +169,24 @@ def list_file(drive, curfile, metadata, depth):
 
 def download_by_file_id(drive, file_id, checksum=True, root="."):
     downfile = drive.CreateFile({"id": file_id})
-    download_file(drive, downfile, checksum=checksum, root=root)
+    failed = download_file(drive, downfile, checksum=checksum, root=root)
+    return failed
  
 def download_file(drive, afile, checksum=True, root="."):
+    # Track failed downloads or MD5 checksum verifications
+    failed = {"HTTP": [], "MD5": []}
+
     if is_folder(afile):
-        download_folder(drive, afile, checksum=checksum, root=root)
+        folder_path = os.path.join(root, afile["title"])
+        log.info("Creating folder %s" % folder_path)
+        create_lfolder(folder_path)
+        query = "'%s' in parents and trashed = false" % afile["id"]
+        file_list = drive.ListFile({"q": query}).GetList()
+        for onefile in file_list:
+            failed_file = download_file(
+                drive, onefile, checksum=checksum, root=folder_path)
+            failed["HTTP"].extend(failed_file["HTTP"])
+            failed["MD5"].extend(failed_file["MD5"])
     else:
         downpath = os.path.join(root, afile["title"])
         file_size = int(afile["fileSize"])
@@ -182,30 +195,41 @@ def download_file(drive, afile, checksum=True, root="."):
                  (downpath, file_size, afile["md5Checksum"]))
         if url is None or len(url) == 0:
             error("%s is not downloadable" % afile["title"])
-        #log.debug("Download url = " + url)
 
+        retry_limit = 6
+        retries = 0
         t1 = datetime.datetime.now()
-        bytes_received = -1  # so +1 in first loop iteration increments to 0
+        bytes_received = 0
+        bytes_start = 0
+        bytes_end = bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
+        bytes_end = max(bytes_end, 0)  # for empty files bytes_end might be -1
         prev_progress = 0.00
+
         with open(downpath, "wb") as fh:
             while bytes_received < file_size:
-                bytes_start = bytes_received + 1
-                bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
                 headers = {
                     "range": "bytes=%i-%i" % (bytes_start, bytes_end),
                     "content-type": "application/octet-stream"
                 }
-                resp, content = drive.auth.service._http.request(
+
+                response, content = drive.auth.service._http.request(
                     url, method="GET", headers=headers)
-                # TODO CTB: should we retry as with resumable uploads given
-                # certain non-fatal errors?
-                if resp.status in [206, 200]:
+
+                if response.status in [206, 200]:
                     fh.write(content)
                     log.debug(
                         "Downloaded bytes %i-%i with status %s" %
-                        (bytes_start, bytes_end, resp.status))
+                        (bytes_start, bytes_end, response.status))
                     bytes_received += CHUNKSIZE
-                    cur_progress = float(bytes_received) / file_size * 100
+                    bytes_start = bytes_received + 1
+                    bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
+                    # For empty files bytes_end might be -1
+                    bytes_end = max(bytes_end, 0)
+
+                    try:
+                        cur_progress = float(bytes_received) / file_size * 100
+                    except ZeroDivisionError:
+                        cur_progress = 100.00
                     # Only print progress every 5% or greater
                     if cur_progress - prev_progress > 5.0 and cur_progress < 100.00:
                         t_tmp = datetime.datetime.now()
@@ -214,29 +238,40 @@ def download_file(drive, afile, checksum=True, root="."):
                                  (cur_progress, rate))
                         prev_progress = cur_progress
                 else:
-                    fh.close()
-                    os.remove(downpath)
-                    error("An error occurred: %i" % resp.status)
+                    if retries < retry_limit:
+                        delay = 2 ** retries
+                        log.warning("HTTP error %i, retrying bytes %i-%i in %is" %
+                                    (response.status, bytes_start, bytes_end, delay))
+                        retries += 1
+                        time.sleep(delay)
+                    else:
+                        log.warning("HTTP error %i, aborting" % response.status)
+                        failed["HTTP"] = [
+                            {
+                                "google_file": afile,
+                                "root": root
+                            }
+                        ]
+                        fh.close()
+                        os.remove(downpath)
+                        break
 
         t2 = datetime.datetime.now()
         rate = calc_transfer_rate(t1, t2, file_size)
         log.info("Downloaded 100.00%%.  %i bytes in %s (%.02fMB/s)" % 
              (file_size, format_timedelta(t1, t2), rate))
 
-        if checksum:
-            check_md5(downpath, afile["md5Checksum"])
+        if len(failed["HTTP"]) == 0:
+            if checksum:
+                if not check_md5(downpath, afile["md5Checksum"]):
+                    failed["MD5"] = [
+                        {
+                            "google_file": afile,
+                            "root": root
+                        }
+                    ]
 
-def download_folder(drive, gfolder, checksum=True, root="."):
-    folder_path = os.path.join(root, gfolder["title"])
-    log.info("Creating folder %s" % folder_path)
-    create_lfolder(folder_path)
-    query = "'%s' in parents and trashed = false" % gfolder["id"]
-    file_list = drive.ListFile({"q": query}).GetList()
-    for onefile in file_list:
-        if is_folder(onefile):
-            download_folder(drive, onefile, checksum=checksum, root=folder_path)
-        else:
-            download_file(drive, onefile, checksum=checksum, root=folder_path)
+    return failed
 
 # Test upload_file error recovery by forcing some file uploads to fail
 #upload_fails = {"count": 8}
@@ -710,7 +745,8 @@ def cli():
         "download", 
         help="Download a file from Google Drive",
         formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_download.add_argument("--verbose",
+    parser_download.add_argument(
+        "--verbose",
         default=False,
         action="store_true",
         help="Verbose logging output")
@@ -730,7 +766,8 @@ def cli():
         "upload", 
         help="Upload a file or folder to Google Drive",
         formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_upload.add_argument("--verbose",
+    parser_upload.add_argument(
+        "--verbose",
         default=False,
         action="store_true",
         help="Verbose logging output")
@@ -779,8 +816,42 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    download_by_file_id(args.drive, args.id, not args.no_checksum)
-    log.info("Download successful")
+    failed = download_by_file_id(args.drive, args.id, not args.no_checksum)
+
+    # If any files failed to download, retry, then print the
+    # files if any still don't download
+    bad_downloads = []
+    bad_md5 = []
+    if len(failed["HTTP"]) > 0:
+        log.info("%s file downloads failed" % len(failed["HTTP"]))
+        for f in failed["HTTP"]:
+            downpath = os.path.join(f["root"], f["google_file"]["title"])
+            log.info("Retrying " + downpath)
+            new_fail = download_file(
+                args.drive, f["google_file"],
+                checksum=not args.no_checksum, root=f["root"])
+            if len(new_fail["HTTP"]) > 0:
+                # Still couldn't download the file, print an error report
+                bad_downloads.append(downpath)
+            elif len(new_fail["MD5"]) > 0:
+                # Download was successful, but MD5 failed
+                failed["MD5"].extend(new_fail["MD5"])
+
+        if len(bad_downloads) == 0:
+            log.info("All file download retries were successful")
+        else:
+            log.warning("%i files failed to download:\n%s" %
+                        (len(bad_downloads), "\n".join(bad_downloads)))
+
+    bad_md5 = map(
+        lambda x: os.path.join(x["root"], x["google_file"]["title"]),
+        failed["MD5"])
+    if len(bad_md5) > 0:
+        log.warning("%i files failed MD5 verification\n%s" %
+                    (len(failed["MD5"]), "\n".join(bad_md5)))
+
+    if len(bad_downloads) == 0 and len(bad_md5) == 0:
+        log.info("All downloads were successful")
 
 def cli_upload_file(args):
     if os.path.islink(args.file):
@@ -824,9 +895,12 @@ def cli_upload_file(args):
                         (len(bad_uploads), "\n".join(bad_uploads)))
 
     bad_md5 = map(lambda x: x["file_path"], failed["MD5"])
-    if len(bad_md5):
+    if len(bad_md5) > 0:
         log.warning("%i files failed MD5 verification\n%s" %
                     (len(failed["MD5"]), "\n".join(bad_md5)))
+
+    if len(bad_uploads) == 0 and len(bad_md5) == 0:
+        log.info("All uploads were successful")
 
 
 def cli_version(args):
