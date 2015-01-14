@@ -21,7 +21,7 @@ from pydrive.drive import GoogleDrive
 VERSION = "0.5.4"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
-CHUNKSIZE = 2 ** 20 * 100  # 100 MiB chunks
+CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
