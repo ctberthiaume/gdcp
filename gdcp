@@ -18,10 +18,10 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
-CHUNKSIZE = 2 ** 20 * 20  # 20 MiB chunks
+CHUNKSIZE = 2 ** 20 * 100  # 100 MiB chunks
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
@@ -588,7 +588,7 @@ def check_md5(file_path, response_md5):
 def path_join(join_path, files):
     return map(lambda x: os.path.join(join_path, x), files)
 
-# Return iterable of file which are not symbolic links
+# Return iterable of files which are not symbolic links
 def file_filter(files):
     return filter(
         lambda x: not os.path.islink(x) and os.path.isfile(x),
@@ -758,12 +758,10 @@ def cli():
         "-n", "--no_checksum",
         default=False,
         action="store_true",
-        help="Skip MD5 checksum verification after download"
-    )
+        help="Skip MD5 checksum verification after download")
     parser_download.add_argument(
         "target",
-        help="Destination directory"
-    )
+        help="Destination directory")
     parser_download.set_defaults(func=cli_download_file)
 
     # Upload
@@ -785,8 +783,7 @@ def cli():
         "-n", "--no_checksum",
         default=False,
         action="store_true",
-        help="Skip MD5 checksum verification after upload"
-    )
+        help="Skip MD5 checksum verification after upload")
     parser_upload.add_argument(
         "-t", "--title",
         help="""Title for file/folder.  Must be specified if folder is '.' or
