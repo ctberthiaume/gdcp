@@ -821,7 +821,7 @@ def cli():
         help="Description for file/folder")
     parser_upload.add_argument(
         "file",
-        help="File to upload")
+        help="File/folder to upload")
     parser_upload.set_defaults(func=cli_upload_file)
 
     args = parser.parse_args()
