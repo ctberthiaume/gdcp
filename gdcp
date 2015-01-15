@@ -177,10 +177,11 @@ def download_file(drive, afile, checksum=True, root="."):
     failed = {"HTTP": [], "MD5": []}
 
     if not os.path.exists(root):
-    	create_local_folder(root)
-    	
+        create_local_folder(root)
+        
     if is_google_folder(afile):
         folder_path = os.path.join(root, afile["title"])
+        folder_path = de_duplicate_path_name(folder_path)
         log.info("Creating folder %s" % folder_path)
         create_local_folder(folder_path)
         query = "'%s' in parents and trashed = false" % afile["id"]
@@ -192,6 +193,7 @@ def download_file(drive, afile, checksum=True, root="."):
             failed["MD5"].extend(failed_file["MD5"])
     else:
         downpath = os.path.join(root, afile["title"])
+        downpath = de_duplicate_path_name(downpath)
         file_size = int(afile["fileSize"])
         url = afile["downloadUrl"]
         log.info("Downloading %s, size = %i, md5 = %s" % 
@@ -618,6 +620,31 @@ def title_from_path(file_path):
     title = file_path.split("/")[-1]
     return title
 
+"""Create a sensible new path name when old name is a duplicate.
+"""
+def de_duplicate_path_name(old_path):
+    if not os.path.exists(old_path):
+        return old_path
+        
+    delimiter = "_duplicate_"
+    old_path = os.path.normpath(old_path)
+    head, tail = os.path.split(old_path)
+    old_tail_atoms = tail.split(delimiter)
+
+    if delimiter in tail and old_tail_atoms[-1].isdigit():
+        i = old_tail_atoms[-1]
+        new_tail = tail[0:-len(i)] + str(int(i) + 1)
+    else:
+        new_tail = tail + delimiter + '1'
+
+    new_path = os.path.join(head, new_tail)
+   
+    if os.path.exists(new_path):
+        new_path = de_duplicate_path_name(new_path)
+    
+    return new_path
+
+        
 """Create folder in Google Drive
 """
 def create_google_folder(drive, title, description=None, parent_id=None):
@@ -633,7 +660,8 @@ def create_local_folder(folder_path):
     try:
         os.makedirs(folder_path)
     except OSError as e:
-        error("Could not create directory %s. Perhaps it already exists." % folder_path)
+        error("Could not create directory %s. Perhaps it already exists."\
+              % folder_path)
 
 def chdir(folder_path):
     try:
@@ -738,7 +766,7 @@ def cli():
     parser_list.add_argument(
         "-i", "--id",
         help="""File or folder ID.  If not specified listing starts at Google
-             Drive root.""")
+                Drive root.""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -818,7 +846,8 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    failed = download_by_file_id(args.drive, args.id, not args.no_checksum, args.target)
+    failed = download_by_file_id(args.drive, args.id, not args.no_checksum,
+                                 args.target)
 
     # If any files failed to download, retry, then print the
     # files if any still don't download
