@@ -12,6 +12,7 @@ import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import mimetypes
 import httplib2
+import ssl
 import apiclient.errors
 import apiclient.http
 import oauth2client.client
@@ -310,9 +311,11 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 if e.resp.status in [404, 410, 500, 502, 503, 504]:
                     if complete_retries < retry_limit:
                         # start upload all over
-                        log.warning("HTTP error %d, restarting upload" %
-                                    e.resp.status)
+                        delay = 2 ** complete_retries
+                        log.warning("HTTP error %i, restarting upload in %is" %
+                                    (e.resp.status, delay))
                         complete_retries += 1
+                        time.sleep(delay)
                         request = drive.auth.service.files().insert(body=body)
                     else:
                         # No more complete retries left, abort
@@ -358,6 +361,32 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                     }
                 ]
                 break
+            except (KeyError, ssl.SSLError) as e:
+                if complete_retries < retry_limit:
+                    # start upload all over
+                    delay = 2 ** complete_retries
+                    log.warning("Error %s, restarting upload in %is" %
+                                (e, delay))
+                    prev_progress = 0.00
+                    resumable_retries = 0
+                    bytes_sent = 0
+                    complete_retries += 1
+                    time.sleep(delay)
+                    request = drive.auth.service.files().insert(body=body)
+                else:
+                    # No more complete retries left, abort
+                    log.warning("Error %s. Too many retries, aborting" % e)
+                    failed["HTTP"] = [
+                        {
+                            "drive": drive,
+                            "file_path": file_path,
+                            "parent_id": parent_id,
+                            "title": title,
+                            "description": description,
+                            "checksum": checksum
+                        }
+                    ]
+                    break
     else:
         request = drive.auth.service.files().insert(
             body=body,
@@ -389,17 +418,17 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                 if e.resp.status in [404, 410]:
                     if complete_retries < retry_limit:
                         # start upload all over
-                        log.warning("HTTP error %d, restarting upload" %
-                                    e.resp.status)
+                        delay = 2 ** complete_retries
+                        log.warning("HTTP error %i, restarting upload in %is" %
+                                    (e.resp.status, delay))
                         prev_progress = 0.00
                         resumable_retries = 0
                         bytes_sent = 0
                         complete_retries += 1
+                        time.sleep(delay)
                         request = drive.auth.service.files().insert(
                             body=body,
                             media_body=media_body)
-                        delay = 2 ** complete_retries
-                        time.sleep(delay)
                     else:
                         # No more complete retries left, abort
                         msg = "HTTP error %i.  " % e.resp.status
@@ -437,7 +466,7 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                         break
                     else:
                         delay = 2 ** resumable_retries
-                        log.warning("HTTP error %d, retrying in %ds ..." %
+                        log.warning("HTTP error %i, retrying in %is ..." %
                                     (e.resp.status, delay))
                         time.sleep(delay)
                         resumable_retries += 1
@@ -469,6 +498,34 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                     }
                 ]
                 break
+            except (KeyError, ssl.SSLError) as e:
+                if complete_retries < retry_limit:
+                    # start upload all over
+                    delay = 2 ** complete_retries
+                    log.warning("Error %s, restarting upload in %is" %
+                               (e, delay))
+                    prev_progress = 0.00
+                    resumable_retries = 0
+                    bytes_sent = 0
+                    complete_retries += 1
+                    time.sleep(delay)
+                    request = drive.auth.service.files().insert(
+                        body=body,
+                        media_body=media_body)
+                else:
+                    # No more complete retries left, abort
+                    log.warning("Error %s. Too many retries, aborting" % e)
+                    failed["HTTP"] = [
+                        {
+                            "drive": drive,
+                            "file_path": file_path,
+                            "parent_id": parent_id,
+                            "title": title,
+                            "description": description,
+                            "checksum": checksum
+                        }
+                    ]
+                    break
 
     if len(failed["HTTP"]) == 0:
         t2 = datetime.datetime.now()
