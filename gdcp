@@ -11,6 +11,7 @@ import datetime
 import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import mimetypes
+import httplib
 import httplib2
 import ssl
 import apiclient.errors
@@ -218,8 +219,28 @@ def download_file(drive, afile, checksum=True, root="."):
                     "content-type": "application/octet-stream"
                 }
 
-                response, content = drive.auth.service._http.request(
-                    url, method="GET", headers=headers)
+                try:
+                    response, content = drive.auth.service._http.request(
+                        url, method="GET", headers=headers)
+                except httplib.IncompleteRead as e:
+                    if retries < retry_limit:
+                        delay = 2 ** retries
+                        log.warning("Exception %s, retrying bytes %i-%i in %is" %
+                                    (e, bytes_start, bytes_end, delay))
+                        retries += 1
+                        time.sleep(delay)
+                        continue
+                    else:
+                        log.warning("Exception %s, aborting" % e)
+                        failed["HTTP"] = [
+                            {
+                                "google_file": afile,
+                                "root": root
+                            }
+                        ]
+                        fh.close()
+                        os.remove(downpath)
+                        break
 
                 if response.status in [206, 200]:
                     fh.write(content)
@@ -545,6 +566,8 @@ def upload_file(drive, file_path, title=None, description=None, parent_id=None,
                         "checksum": checksum
                     }
                 ]
+    else:
+        log.debug("Failed attempt to upload %s" % file_path)
 
     return failed
 
