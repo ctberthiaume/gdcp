@@ -208,7 +208,7 @@ def download_file(drive, afile, checksum=True, root="."):
         t1 = datetime.datetime.now()
         bytes_received = 0
         bytes_start = 0
-        bytes_end = bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
+        bytes_end = min(file_size - 1, bytes_received + CHUNKSIZE)
         bytes_end = max(bytes_end, 0)  # for empty files bytes_end might be -1
         prev_progress = 0.00
 
