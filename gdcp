@@ -136,7 +136,9 @@ class GdcpFile(object):
                         if status:
                             # Successfully sent a chunk, but download not complete yet
                             # Keep track of progress
+                            prev_bytes_sent = self.bytes_sent
                             self._register_upload_chunk(status, t1)
+                            log.debug("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError, httplib2.HttpLib2Error) as e:
                         # Chunk upload threw an error, retry or restart
 
@@ -173,19 +175,17 @@ class GdcpFile(object):
                                 self._fail_upload()
                                 break
 
-            t2 = datetime.datetime.now()
-
             self._add_response(response)
             if response:
+                t2 = datetime.datetime.now()
+                rate = calc_transfer_rate(t0, t2, self.fileSize)
+                log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s) %s" %
+                    (self.fileSize, format_timedelta(t0, t2), rate, self.id))
                 if self.check_checksum:
                     if not check_md5(self.path, self.google_md5Checksum):
                         self._fail_md5()
             if self.fail_upload_flag or self.fail_md5_flag:
                 log.warning("Upload failed for %s" % self.path)
-            else:
-                rate = calc_transfer_rate(t0, t2, self.fileSize)
-                log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s)" % (self.fileSize, format_timedelta(t0, t2), rate))
-
 
     def download(self):
         self._get_google_file_metadata()
@@ -237,8 +237,7 @@ class GdcpFile(object):
 
                     if response.status in [206, 200]:
                         fh.write(content)
-                        log.debug(
-                            "Downloaded bytes %i-%i with status %s" %
+                        log.debug("Downloaded bytes %i-%i with status %s" %
                             (bytes_start, bytes_end, response.status))
                         self.bytes_received += bytes_end - bytes_start + 1
                         self._register_download_chunk(t1, bytes_end - bytes_start + 1)
@@ -339,7 +338,8 @@ class GdcpFile(object):
         # Only print progress every 5% or greater
         diff_progress = cur_progress - self.prev_progress
         if diff_progress > 5.0 and cur_progress < 100.00:
-            rate = calc_transfer_rate(t1, datetime.datetime.now(), self.bytes_sent)
+            t_tmp = datetime.datetime.now()
+            rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
             log.info("Uploaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
             self.prev_progress = cur_progress
 
@@ -1248,6 +1248,7 @@ def cli_list_files(args):
     else:
         if args.all:
             error("list -a not compatible with -d")
+    
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
