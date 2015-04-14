@@ -10,6 +10,7 @@ import subprocess
 import datetime
 import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+import random
 import mimetypes
 import httplib
 import httplib2
@@ -29,6 +30,205 @@ log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
 oauth2_client = logging.getLogger("oauth2client.client")
 oauth2_util = logging.getLogger("oauth2client.util")
+
+class Gdcp(object):
+    def __init__(self, drive):
+        self.drive = drive
+        self.failures = {"HTTP": [], "MD5": []}
+
+    def failed(self):
+        return bool(len(self.failures["HTTP"]) or len(self.failures["MD5"]))
+
+    def print_failed(self):
+        if len(self.failures["HTTP"]):
+            log.warning("%i files failed to upload:\n%s" %
+                        (len(self.failures["HTTP"]), "\n".join(self.failures["HTTP"])))
+        if len(self.failures["MD5"]):
+            log.warning("%i files failed MD5 verification:\n%s" %
+                        (len(self.failures["MD5"]), "\n".join(self.failures["MD5"])))
+
+    def upload(self, **kwargs):
+        f = GdcpFile(self, **kwargs)
+        f.upload()
+        return f
+
+class GdcpFile(object):
+    def __init__(self, gdcp, **kwargs):
+        self.gdcp = gdcp
+        self.drive = gdcp.drive
+
+        self.id = kwargs.get("id", None)
+        self.path = kwargs.get("path", None)
+        self.title = kwargs.get("title", None)
+        self.description = kwargs.get("description", None)
+        self.parent = kwargs.get("parent", None)
+        self.checksum = kwargs.get("checksum", True)
+
+        if self.path:
+            self.mimetype = guess_mimetype(self.path)
+            self.size = os.path.getsize(self.path)
+        if self.title is None:
+            self.title = title_from_path(self.path)
+
+        self.retry_limit = 6
+        self.retries = 0
+        self.prev_progress = 0.00
+        self.bytes_sent = 0
+        self.fail_md5_flag = False
+        self.fail_upload_flag = False
+
+    def upload(self, parent=None, checksum=True):
+        if os.path.isdir(self.path):
+            self._upload_folder()
+        else:
+            self._upload_file()
+
+    def _create_media_body(self):
+        return apiclient.http.MediaFileUpload(self.path,
+            chunksize=CHUNKSIZE, resumable=True, mimetype=self.mimetype)
+
+    def _create_body(self):
+        body = {"title": self.title}
+        if self.mimetype is None:
+            body["mimeType"] = "application/vnd.google-apps.folder"
+        else:
+            body["mimeType"] = self.mimetype
+        if self.description is not None:
+            body["description"] = self.description
+        if self.parent is not None:
+            body["parents"] = [{"id": self.parent}]
+        return body
+
+    def _delay(self):
+        return (2 ** self.retries) + random.random()
+
+    def _register_chunk(self, status, t1):
+        """Track progress through upload"""
+        cur_progress = status.progress() * 100
+        self.bytes_sent = min(self.bytes_sent + CHUNKSIZE, self.size)
+        # Only print progress every 5% or greater
+        diff_progress = cur_progress - self.prev_progress
+        if diff_progress > 5.0 and cur_progress < 100.00:
+            rate = calc_transfer_rate(t1, datetime.datetime.now(), self.bytes_sent)
+            log.info("Uploaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
+            self.prev_progress = cur_progress
+
+    def _fail_md5(self):
+        self.fail_md5_flag = True
+        self.gdcp.failures["MD5"].append(self)
+
+    def _fail_upload(self):
+        self.fail_upload_flag = True
+        self.gdcp.failures["HTTP"].append(self)
+
+    def _upload_file(self):
+        log.info("Uploading %s" % self.path)
+
+        media_body = self._create_media_body()
+        body = self._create_body()
+        t0 = datetime.datetime.now()
+
+        response = None
+
+        if self.size == 0:
+            # zero size files don't do resumable chunked uploads
+            request = self.drive.auth.service.files().insert(body=body)
+            while response is None:
+                try:
+                    response = request.execute()
+                except (apiclient.errors.HttpError, KeyError, ssl.SSLError, httplib2.HttpLib2Error) as e:
+                    # Create sensible error string
+                    if hasattr(e, "resp"):
+                        # apiclient.errors.HttpError has http response in resp
+                        err_msg = "HTTP %i" % e.resp.status
+                    else:
+                        err_msg = "Error %s" % e
+                    if self.retries < self.retry_limit:
+                        log.warning("%s, restarting upload in %is" % (err_msg, self._delay()))
+                        time.sleep(self._delay())
+                        self.retries += 1
+                        request = self.drive.auth.service.files().insert(body=body)
+                    else:
+                        # No more retries left, abort
+                        log.warning("%s, aborting" % err_msg)
+                        self._fail_upload()
+                        break
+        else:
+            # File is not empty, do resumable chunked upload
+            request = self.drive.auth.service.files().insert(body=body, media_body=media_body)
+            while response is None:
+                t1 = datetime.datetime.now()
+                try:
+                    # Attempt to upload one chunk
+                    status, response = request.next_chunk()
+                    if status:
+                        # Successfully sent a chunk, but download not complete yet
+                        # Keep track of progress
+                        self._register_chunk(status, t1)
+                except (apiclient.errors.HttpError, KeyError, ssl.SSLError, httplib2.HttpLib2Error) as e:
+                    # Chunk upload threw an error, retry or restart
+
+                    # Create sensible error string
+                    if hasattr(e, "resp"):
+                        err_msg = "HTTP %i" % e.resp.status
+                    else:
+                        err_msg = "Error %s" % e
+
+                    if hasattr(e, "resp") and e.resp.status in [500, 502, 503, 504]:
+                        # Retry this chunk
+                        if self.retries < self.retry_limit:
+                            delay = 2 ** resumable_retries
+                            log.warning("%s, retrying chunk in %is" % (err_msg, self._delay()))
+                            time.sleep(self._delay())
+                            self.retries += 1
+                        else:
+                            # No more retries left, abort
+                            log.warning("%s, aborting" % err_msg)
+                            self._fail_upload()
+                            break
+                    else:
+                        # Restart upload
+                        if self.retries < self.retry_limit:
+                            log.warning("%s, restarting upload in %is" % (err_msg, self._delay()))
+                            time.sleep(self._delay())
+                            self.prev_progress = 0.00
+                            self.bytes_sent = 0
+                            self.retries += 1
+                            request = self.drive.auth.service.files().insert(body=body, media_body=media_body)
+                        else:
+                            # No more retries left, abort
+                            log.warning("%s, aborting" % err_msg)
+                            self._fail_upload()
+                            break
+
+        t2 = datetime.datetime.now()
+
+        self.response = response
+        if response:
+            if self.checksum:
+                if not check_md5(self.path, response["md5Checksum"]):
+                    self._fail_md5()
+        if self.fail_upload_flag or self.fail_md5_flag:
+            log.warning("Upload failed for %s" % self.path)
+        else:
+            rate = calc_transfer_rate(t0, t2, self.size)
+            log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s)" % (self.size, format_timedelta(t0, t2), rate))
+
+    def _upload_folder(self):
+        self._create_google_folder()
+
+        allfiles = path_join(self.path, os.listdir(self.path))
+        allfiles = [x for x in allfiles if not os.path.islink(x)]
+
+        for _file in allfiles:
+            self.gdcp.upload(path=_file, parent=self.response["id"], checksum=self.checksum)
+
+    def _create_google_folder(self):
+        body = self._create_body()
+        log.debug("About to create folder %s" % body)
+        response = self.drive.auth.service.files().insert(body=body).execute()
+        log.info("Created folder %s" % self.title)
+        self.response = response
 
 # -----------------------------------------------------------------------------
 # Main
@@ -631,10 +831,7 @@ def create_media_body(file_path, chunksize, mimetype):
 
 def create_body(title, description=None, mimetype=None, parent_id=None):
     body = {"title": title}
-    if mimetype is None:
-        body["mimeType"] = "application/vnd.google-apps.folder"
-    else:
-        body["mimeType"] = mimetype
+    body["mimeType"] = mimetype
     if description is not None:
         body["description"] = description
     if parent_id is not None:
@@ -642,9 +839,12 @@ def create_body(title, description=None, mimetype=None, parent_id=None):
     return body
 
 def guess_mimetype(file_path):
-    mimetype = mimetypes.guess_type(file_path)[0]
-    if mimetype is None:
-        mimetype = "application/octet-stream"
+    if os.path.isdir(file_path):
+        mimetype = "application/vnd.google-apps.folder"
+    else:
+        mimetype = mimetypes.guess_type(file_path)[0]
+        if mimetype is None:
+            mimetype = "application/octet-stream"
     return mimetype
 
 def check_md5(file_path, response_md5):
@@ -965,6 +1165,7 @@ def cli_download_file(args):
         log.info("All downloads were successful")
 
 def cli_upload_file(args):
+    gdcp = Gdcp(args.drive)
     if os.path.islink(args.file):
         error("Uploading symbolic links not supported")
     if os.path.isdir(args.file):
@@ -972,46 +1173,12 @@ def cli_upload_file(args):
         if folder in [".", "..", "/"]:
             if not args.title:
                 error("-t must be supplied if folder is '.', '..', or '/'")
-        failed = upload_folder(args.drive, args.file, args.title,
-                               args.description, args.parent,
-                               not args.no_checksum)
-    else:
-        failed = upload_file(args.drive, args.file, args.title,
-                             args.description, args.parent,
-                             not args.no_checksum)
-
-    # If any files failed to upload, retry, then print the
-    # files if any still don't upload
-    bad_uploads = []
-    bad_md5 = []
-    if len(failed["HTTP"]) > 0:
-        log.info("%s file uploads failed" % len(failed["HTTP"]))
-        for f in failed["HTTP"]:
-            log.info("Retrying " + f["file_path"])
-            new_fail = upload_file(
-                f["drive"], f["file_path"], f["title"], f["description"],
-                f["parent_id"], f["checksum"])
-
-            if len(new_fail["HTTP"]) > 0:
-                # Still couldn't upload the file, print an error report
-                bad_uploads.append(new_fail["HTTP"][0]["file_path"])
-            elif len(new_fail["MD5"]) > 0:
-                # Upload was successful, but MD5 failed
-                failed["MD5"].extend(new_fail["MD5"])
-
-        if len(bad_uploads) == 0:
-            log.info("All file upload retries were successful")
-        else:
-            log.warning("%i files failed to upload:\n%s" %
-                        (len(bad_uploads), "\n".join(bad_uploads)))
-
-    bad_md5 = map(lambda x: x["file_path"], failed["MD5"])
-    if len(bad_md5) > 0:
-        log.warning("%i files failed MD5 verification\n%s" %
-                    (len(failed["MD5"]), "\n".join(bad_md5)))
-
-    if len(bad_uploads) == 0 and len(bad_md5) == 0:
-        log.info("All uploads were successful")
+    gdcp.upload(path=args.file, title=args.title,
+        parent=args.parent, description=args.description,
+        checksum=not args.no_checksum)
+    if gdcp.failed():
+        gdcp.print_failed()
+        sys.exit(1)
 
 
 def cli_version(args):
