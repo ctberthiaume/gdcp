@@ -32,9 +32,17 @@ oauth2_client = logging.getLogger("oauth2client.client")
 oauth2_util = logging.getLogger("oauth2client.util")
 
 class Gdcp(object):
-    def __init__(self, drive):
+    def __init__(self, drive, **kwargs):
         self.drive = drive
         self.failures = {"HTTP": [], "MD5": []}
+        self.exclude_patterns = kwargs.get("excludes", [])
+        self.include = kwargs.get("include", False)
+        # Should folders be considered in exclude rules?
+        # By default rules only apply to files
+        self.exclude_folders = kwargs.get("exclude_folders", False)
+        self.excludes = []
+        for e in self.exclude_patterns:
+            self.excludes.append(re.compile(e))
 
     def failed(self):
         return bool(len(self.failures["HTTP"]) or len(self.failures["MD5"]))
@@ -86,9 +94,13 @@ class GdcpFile(object):
         self.fail_download_flag = False
 
     def upload(self):
+        # Check for match against any exclude rules
+        if not self._passes_excludes():
+            return
+
         log.info("Uploading %s" % self.path)
 
-        if os.path.isdir(self.path):
+        if self._is_folder():
             # Folder
             self._create_google_folder()
             allfiles = path_join(self.path, os.listdir(self.path))
@@ -190,13 +202,17 @@ class GdcpFile(object):
     def download(self):
         self._get_google_file_metadata()
 
+        # Check for match against any exclude rules
+        if not self._passes_excludes():
+            return
+
         if not os.path.exists(self.root):
             create_local_folder(self.root)
 
         self.path = os.path.join(self.root, self.title)
         self.path = de_duplicate_path_name(self.path)
 
-        if self._is_google_folder():
+        if self._is_folder():
             # Folder
             log.info("Creating folder %s" % self.path)
             create_local_folder(self.path)
@@ -299,7 +315,7 @@ class GdcpFile(object):
         self.fileSize = int(response.get("fileSize", 0))
         self.mimetype = response["mimeType"]
 
-    def _is_google_folder(self):
+    def _is_folder(self):
         return self.mimetype == "application/vnd.google-apps.folder"
 
     def _create_media_body(self):
@@ -371,6 +387,27 @@ class GdcpFile(object):
                         (self.local_md5Checksum, self.google_md5Checksum))
             self._fail_md5()
             return False
+
+    def _passes_excludes(self):
+        """
+        Check if file title passes exclude rules
+        """
+        if self._is_folder():
+            if not self.gdcp.exclude_folders:
+                # By default folders always pass
+                return True
+            # If exlude_folders is True, then apply rules even if this is a
+            # folder
+
+        if self.gdcp.include:
+            passed = False
+        else:
+            passed = True
+        for regex in self.gdcp.excludes:
+            if regex.match(self.title):
+                passed = not passed
+                break
+        return passed
 
     def _fail_md5(self):
         self.fail_md5_flag = True
@@ -524,8 +561,8 @@ def list_file(drive, curfile, metadata, depth):
     """
     Print file listings starting at and including curfile.
 
-    If depth == 0, only print this file.  If depth != 0 and afile is a folder,
-    call list_file on each child with depth-1.  Essentially, descend to the bottom
+    If depth == 0, only print this file. If depth != 0 and afile is a folder,
+    call list_file on each child with depth-1. Essentially, descend to the bottom
     of the directory tree if depth < 0, stop if depth = 0, and continue for
     depth steps if depth > 0.
     """
@@ -720,7 +757,7 @@ def cli():
     # List
     parser_list = subparsers.add_parser(
         "list", 
-        help="List files in Google Drive.  Trashed files are listed.",
+        help="List files in Google Drive. Trashed files are listed.",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_list.add_argument("--verbose",
         default=False,
@@ -736,19 +773,19 @@ def cli():
         "-d", "--depth",
         default=0,
         type=int,
-        help="""Depth of a recursive listing of files in a folder.  0 only
-             lists the file or folder itself.  Depth must be >= 0.  Using a large
+        help="""Depth of a recursive listing of files in a folder. 0 only
+             lists the file or folder itself. Depth must be >= 0. Using a large
              -d value can be slow for deeply nested directory hierarchies with many
              files.""")
     parser_list.add_argument(
         "-a", "--all",
         default=False,
         action="store_true",
-        help="""List all files except for trashed.  Much faster than specifying
+        help="""List all files except for trashed. Much faster than specifying
                 a -d value < 0.""")
     parser_list.add_argument(
         "-i", "--id",
-        help="""File or folder ID.  If not specified listing starts at Google
+        help="""File or folder ID. If not specified listing starts at Google
                 Drive root.""")
     parser_list.set_defaults(func=cli_list_files)
 
@@ -771,6 +808,23 @@ def cli():
         action="store_true",
         help="Skip MD5 checksum verification after download")
     parser_download.add_argument(
+        "-e", "--excludes",
+        default=[],
+        action="append",
+        help="""Files with titles matching these Python regular expression
+             pattern will be excluded. Does not apply to folders. (See
+             --exclude_folders).""")
+    parser_download.add_argument(
+        "-v", "--invert_excludes",
+        default=False,
+        action="store_true",
+        help="""Change exclude rules to become include rules""")
+    parser_download.add_argument(
+        "--exclude_folders",
+        action="store_true",
+        default=False,
+        help="""Apply exclude rules to folder titles in addition to file titles""")
+    parser_download.add_argument(
         "target",
         help="Destination directory")
     parser_download.set_defaults(func=cli_download_file)
@@ -788,7 +842,7 @@ def cli():
     parser_upload.add_argument(
         "-p", "--parent",
         metavar="ID",
-        help="""Parent ID, i.e. containing folder ID.  If not specified
+        help="""Parent ID, i.e. containing folder ID. If not specified
              file will be placed in root folder.""")
     parser_upload.add_argument(
         "-n", "--no_checksum",
@@ -797,8 +851,25 @@ def cli():
         help="Skip MD5 checksum verification after upload")
     parser_upload.add_argument(
         "-t", "--title",
-        help="""Title for file/folder.  Must be specified if folder is '.' or
+        help="""Title for file/folder. Must be specified if folder is '.' or
              '..'""")
+    parser_upload.add_argument(
+        "-e", "--excludes",
+        default=[],
+        action="append",
+        help="""Files with titles matching these Python regular expression
+             pattern will be excluded. Does not apply to folders. (See
+             --exclude_folders).""")
+    parser_upload.add_argument(
+        "-v", "--invert_excludes",
+        default=False,
+        action="store_true",
+        help="""Change exclude rules to become include rules""")
+    parser_upload.add_argument(
+        "--exclude_folders",
+        default=False,
+        action="store_true",
+        help="""Apply exclude rules to folder titles in addition to file titles""")
     parser_upload.add_argument(
         "file",
         help="File/folder to upload")
@@ -827,7 +898,8 @@ def cli_list_files(args):
         list_file_by_id(args.drive, args.id, metadata_list, args.depth)
 
 def cli_download_file(args):
-    gdcp = Gdcp(args.drive)
+    gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
+                exclude_folders=args.exclude_folders)
     gdcp.download(id=args.id, checksum=not args.no_checksum, root=args.target)
     if gdcp.failed():
         gdcp.print_failed()
@@ -836,14 +908,12 @@ def cli_download_file(args):
         log.info("All downloads were successful")
 
 def cli_upload_file(args):
-    gdcp = Gdcp(args.drive)
+    gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
+                exclude_folders=args.exclude_folders)
     if os.path.islink(args.file):
         error("Uploading symbolic links not supported")
     if os.path.isdir(args.file):
         folder = title_from_path(args.file)
-        if folder in [".", "..", "/"]:
-            if not args.title:
-                error("-t must be supplied if folder is '.', '..', or '/'")
     gdcp.upload(path=args.file, title=args.title,
         parent=args.parent, checksum=not args.no_checksum)
     if gdcp.failed():
