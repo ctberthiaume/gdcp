@@ -50,6 +50,7 @@ class Gdcp(object):
     def upload(self, **kwargs):
         f = GdcpFile(self, **kwargs)
         f.upload()
+        return f
 
     def download(self, **kwargs):
         f = GdcpFile(self, **kwargs)
@@ -445,6 +446,9 @@ def authorize(location=CONFIG_DIR):
     gauth.Authorize()
     return gauth
 
+def create_GoogleDrive():
+    return GoogleDrive(authorize())
+
 def do_setup(location=CONFIG_DIR):
     settings = os.path.join(location, "settings.yaml")
     client_secrets = os.path.join(location, "client_secrets.json")
@@ -648,6 +652,9 @@ def error(msg):
     sys.exit(1)
 
 def format_timedelta(t1, t2):
+    """
+    Format time delta between t2 and t1 as "Nd:Nh:Nm:Ns"
+    """
     delta = t2 - t1
     delta_s = delta.total_seconds()
     elapse = []
@@ -799,7 +806,7 @@ def cli():
 
     args = parser.parse_args()
     if args.subcommand_name != "version":
-        args.drive = GoogleDrive(authorize())  # add GoogleDrive
+        args.drive = create_GoogleDrive()  # add GoogleDrive
         if args.verbose:
             verbose()
     args.func(args)
