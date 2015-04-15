@@ -362,9 +362,6 @@ class GdcpFile(object):
         self.gdcp.failures["HTTP"].append(self)
 
 
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
 def main():
     configure_logging()
     configure_signals()
@@ -375,6 +372,9 @@ def main():
 # Configuration functions
 # -----------------------------------------------------------------------------
 def configure_logging():
+    """
+    Configure logging handlers
+    """
     fmt = "%(asctime)-25s %(levelname)-10s %(name)-26s: %(message)s"
     datefmt = "%m/%d/%Y %I:%M:%S %p"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
@@ -404,10 +404,14 @@ def verbose():
     log.setLevel(logging.DEBUG)
 
 def configure_signals():
-    # signal handling
-    # reset SIGINT and SIGPIPE
-    # don't raise KeyboardInterrupt exception on SIGINT
-    # dont' raise IOError on SIGPIPE
+    """
+    Signal handling
+
+    Reset SIGINT and SIGPIPE to defaults
+
+    Don't raise KeyboardInterrupt exception on SIGINT
+    Dont' raise IOError on SIGPIPE
+    """
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
@@ -462,6 +466,9 @@ def do_setup(location=CONFIG_DIR):
 # Google Drive interaction functions
 # -----------------------------------------------------------------------------
 def list_all_files(drive, metadata):
+    """
+    Print metadata for all files in Google Drive
+    """
     query = "trashed = false"
     log.debug("query = '%s'" % query)
     files = drive.ListFile({"q": query}).GetList()
@@ -469,6 +476,9 @@ def list_all_files(drive, metadata):
         print_one_file(afile, metadata)
 
 def list_root(drive, metadata, depth):
+    """
+    Print metadata for files in root of Google Drive
+    """
     query = "trashed = false and 'root' in parents"
     log.debug("query = '%s'" % query)
     files = drive.ListFile({"q": query}).GetList()
@@ -478,17 +488,21 @@ def list_root(drive, metadata, depth):
             list_file(drive, subfile, metadata, depth-1)
 
 def list_file_by_id(drive, file_id, metadata, depth):
+    """
+    Print metadata for a file given by ID
+    """
     afile = drive.CreateFile({"id": file_id})
     list_file(drive, afile, metadata, depth)
 
-"""Print file listings starting at and including curfile.
-
-If depth == 0, only print this file.  If depth != 0 and afile is a folder,
-call list_file on each child with depth-1.  Essentially, descend to the bottom
-of the directory tree if depth < 0, stop if depth = 0, and continue for
-depth steps if depth > 0.
-"""
 def list_file(drive, curfile, metadata, depth):
+    """
+    Print file listings starting at and including curfile.
+
+    If depth == 0, only print this file.  If depth != 0 and afile is a folder,
+    call list_file on each child with depth-1.  Essentially, descend to the bottom
+    of the directory tree if depth < 0, stop if depth = 0, and continue for
+    depth steps if depth > 0.
+    """
     if depth >= 0:
         if is_google_folder(curfile):
             query = "trashed = false and '%s' in parents" % curfile["id"]
@@ -505,6 +519,10 @@ def list_file(drive, curfile, metadata, depth):
 # Utility Functions
 # -----------------------------------------------------------------------------
 def print_one_file(afile, metadata):
+    """
+    Print metadata for one file
+    """
+
     line = []
     for meta in metadata:
         try:
@@ -552,14 +570,18 @@ def check_md5(file_path, response_md5):
                     (md5, response_md5))
     return passed
 
-# Return iterable of items in files joined to join_path
 def path_join(join_path, files):
+    """
+    Return list of items in files joined to join_path.
+
+    Useful if a common directory prefix needs to be joined to a list of files.
+    """
     return map(lambda x: os.path.join(join_path, x), files)
 
 def title_from_path(file_path):
-"""
-Get a sanitized title for a file or folder.
-"""
+    """
+    Get a sanitized title for a file or folder.
+    """
     if file_path is None:
         return None
     file_path = os.path.abspath(file_path)  # resolve things like /foo/../foo
@@ -578,9 +600,9 @@ Get a sanitized title for a file or folder.
     return title
 
 def de_duplicate_path_name(old_path):
-"""
-Create a sensible new path name when old name is a duplicate.
-"""
+    """
+    Create a sensible new path name when old name is a duplicate.
+    """
     if not os.path.exists(old_path):
         return old_path
         
@@ -603,9 +625,9 @@ Create a sensible new path name when old name is a duplicate.
     return new_path
 
 def create_local_folder(folder_path):
-"""
-Create a local folder
-"""
+    """
+    Create a local folder
+    """
     try:
         os.makedirs(folder_path)
     except OSError as e:
@@ -648,9 +670,9 @@ def format_timedelta(t1, t2):
     return "".join(elapse)
 
 def calc_transfer_rate(t1, t2, file_size):
-"""
-Return transfer rate for file_size bytes between t1 and t2
-"""
+    """
+    Return transfer rate for file_size bytes between t1 and t2
+    """
     delta = t2 - t1
     delta_s = delta.total_seconds()
     try:
@@ -667,9 +689,9 @@ def is_google_folder(afile):
 # Command-line interface functions
 # -----------------------------------------------------------------------------
 def cli():
-"""
-Parse command-line options.
-"""
+    """
+    Parse command-line options.
+    """
     parser = ArgumentParser(
         description="Google Drive command-line interface",
         formatter_class=ArgumentDefaultsHelpFormatter)
