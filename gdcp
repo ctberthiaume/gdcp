@@ -182,8 +182,7 @@ class GdcpFile(object):
                 log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s) %s" %
                     (self.fileSize, format_timedelta(t0, t2), rate, self.id))
                 if self.check_checksum:
-                    if not check_md5(self.path, self.google_md5Checksum):
-                        self._fail_md5()
+                    self._check_md5()
             if self.fail_upload_flag or self.fail_md5_flag:
                 log.warning("Upload failed for %s" % self.path)
 
@@ -193,27 +192,27 @@ class GdcpFile(object):
         if not os.path.exists(self.root):
             create_local_folder(self.root)
 
-        downpath = os.path.join(self.root, self.title)
-        downpath = de_duplicate_path_name(downpath)
+        self.path = os.path.join(self.root, self.title)
+        self.path = de_duplicate_path_name(self.path)
 
         if self._is_google_folder():
             # Folder
-            log.info("Creating folder %s" % downpath)
-            create_local_folder(downpath)
+            log.info("Creating folder %s" % self.path)
+            create_local_folder(self.path)
             query = "'%s' in parents and trashed = false" % self.id
             file_list = self.drive.ListFile({"q": query}).GetList()
             for _file in file_list:
-                self.gdcp.download(id=_file["id"], checksum=self.check_checksum, root=downpath)
+                self.gdcp.download(id=_file["id"], checksum=self.check_checksum, root=self.path)
         else:
             # File
             log.info("Downloading %s, size = %i, md5 = %s" % 
-                (downpath, self.fileSize, self.google_md5Checksum))
+                (self.path, self.fileSize, self.google_md5Checksum))
 
             t0 = datetime.datetime.now()
             bytes_start = 0
             bytes_end = min(max(self.fileSize - 1, 0), CHUNKSIZE - 1)
 
-            with open(downpath, "wb") as fh:
+            with open(self.path, "wb") as fh:
                 while self.bytes_received < self.fileSize:
                     t1 = datetime.datetime.now()
                     headers = {
@@ -234,7 +233,7 @@ class GdcpFile(object):
                             log.warning("Exception %s, aborting" % e)
                             self._fail_download()
                             fh.close()
-                            os.remove(downpath)
+                            os.remove(self.path)
                             break
 
                     if response.status in [206, 200]:
@@ -256,15 +255,15 @@ class GdcpFile(object):
                             log.warning("HTTP error %i, aborting" % response.status)
                             self._fail_download()
                             fh.close()
-                            os.remove(downpath)
+                            os.remove(self.path)
                             break
 
             t2 = datetime.datetime.now()
 
             if not self.fail_download_flag:
                 if self.check_checksum:
-                    if not check_md5(downpath, self.google_md5Checksum):
-                        self._fail_md5()
+                    if self.check_checksum:
+                        self._check_md5()
             if self.fail_download_flag or self.fail_md5_flag:
                 log.warning("Download failed for %s" % self.path)
             else:
@@ -348,6 +347,29 @@ class GdcpFile(object):
             rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
             log.info("Uploaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
             self.prev_progress = cur_progress
+
+    def _check_md5(self):
+        """
+        Confirm that response MD5 from Google matches MD5 for local
+        file
+        """
+        log.info("Calculating MD5 checksum for %s" % self.path)
+        try:
+            output = subprocess.check_output(["openssl", "md5", self.path],
+                                             stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as e:
+            error("MD5 calculation exited with an error: '%s'" %
+                  output.rstrip())
+        self.local_md5Checksum = output.split()[-1]
+        if self.local_md5Checksum == self.google_md5Checksum:
+            log.info("MD5 OK.  %s (local) == %s" %
+                     (self.local_md5Checksum, self.google_md5Checksum))
+            return True
+        else:
+            log.warning("MD5 failed.  %s (local) != %s" %
+                        (self.local_md5Checksum, self.google_md5Checksum))
+            self._fail_md5()
+            return False
 
     def _fail_md5(self):
         self.fail_md5_flag = True
@@ -550,25 +572,6 @@ def guess_mimetype(file_path):
         if mimetype is None:
             mimetype = "application/octet-stream"
     return mimetype
-
-def check_md5(file_path, response_md5):
-    log.info("Calculating MD5 checksum for %s" % file_path)
-    try:
-        output = subprocess.check_output(["openssl", "md5", file_path],
-                                         stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as e:
-        error("MD5 calculation exited with an error: '%s'" %
-              output.rstrip())
-    md5 = output.split()[-1]
-    if md5 == response_md5:
-        log.info("MD5 OK.  %s (local) == %s" %
-                 (md5, response_md5))
-        passed = True
-    else:
-        passed = False
-        log.warning("MD5 failed.  %s (local) != %s" %
-                    (md5, response_md5))
-    return passed
 
 def path_join(join_path, files):
     """
