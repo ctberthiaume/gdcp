@@ -65,13 +65,12 @@ class Gdcp(object):
         f.download()
 
 class GdcpFile(object):
+
     def __init__(self, gdcp, **kwargs):
         self.gdcp = gdcp
         self.drive = gdcp.drive
 
-        self.id = kwargs.get("id", None)
-
-
+        self.id = find_id(kwargs.get("id", None))
         self.path = kwargs.get("path", None)
         self.title = kwargs.get("title", None)
         self.parent = kwargs.get("parent", None)
@@ -554,8 +553,10 @@ def list_file_by_id(drive, file_id, metadata, depth):
     """
     Print metadata for a file given by ID
     """
-    afile = drive.CreateFile({"id": file_id})
-    list_file(drive, afile, metadata, depth)
+    file_id = find_id(file_id)
+    if file_id:
+        afile = drive.CreateFile({"id": file_id})
+        list_file(drive, afile, metadata, depth)
 
 def list_file(drive, curfile, metadata, depth):
     """
@@ -731,6 +732,29 @@ def calc_transfer_rate(t1, t2, file_size):
 def is_google_folder(afile):
     return afile["mimeType"] == "application/vnd.google-apps.folder"
 
+def find_id(id_string):
+    """
+    Return file ID from common URLs or URL fragments which contain the ID.
+
+    Valid inputs include:
+    - an ID
+    - part or all of the Google Drive browser URL for a folder
+      e.g. https://drive.google.com/drive/#folders/0B01234567890123456789012345/0B01234567890123456789012346
+      e.g. 987012345/0B01234567890123456789012346
+    - the download link for a file or folder provided in the Google Drive
+      browser interface from "Get Link" in a context menu
+      e.g. https://drive.google.com/open?id=0B01234567890123456789012346&authuser=0
+    """
+    if id_string is None:
+        return None
+    get_link = re.compile("^https://drive.google.com/open\?id=([^&]+)&.*$")
+    address_bar = re.compile("^.*/([^/]+)$")
+    match = get_link.match(id_string)
+    if not match:
+        match = address_bar.match(id_string)
+    if match:
+        id_string = match.groups()[0]
+    return id_string
 
 # -----------------------------------------------------------------------------
 # Command-line interface functions
