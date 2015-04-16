@@ -36,13 +36,12 @@ class Gdcp(object):
         self.drive = drive
         self.failures = {"HTTP": [], "MD5": []}
         self.exclude_patterns = kwargs.get("excludes", [])
+        self.excludes = [re.compile(e) for e in self.exclude_patterns]
         self.include = kwargs.get("include", False)
+
         # Should folders be considered in exclude rules?
         # By default rules only apply to files
         self.exclude_folders = kwargs.get("exclude_folders", False)
-        self.excludes = []
-        for e in self.exclude_patterns:
-            self.excludes.append(re.compile(e))
 
     def failed(self):
         return bool(len(self.failures["HTTP"]) or len(self.failures["MD5"]))
@@ -56,13 +55,27 @@ class Gdcp(object):
                         (len(self.failures["MD5"]), "\n".join(self.failures["MD5"])))
 
     def upload(self, **kwargs):
-        f = GdcpFile(self, **kwargs)
-        f.upload()
-        return f
+        files = []
+        paths = kwargs.get("paths", [])
+        if len(paths) > 1:
+            # Custom title turned off if more than one file
+            kwargs["title"] = None
+        for local_file in kwargs.get("paths", []):
+            parent = kwargs.get("parent", None)
+            checksum = kwargs["checksum"]
+            title = kwargs.get("title", None)
+            f = GdcpFile(self, path=local_file, parent=parent, checksum=checksum, title=title)
+            f.upload()
+            files.append(f)
+        return files
 
     def download(self, **kwargs):
-        f = GdcpFile(self, **kwargs)
-        f.download()
+        files = []
+        for _id in kwargs.get("ids", []):
+            f = GdcpFile(self, id=_id, checksum=kwargs["checksum"], root=kwargs["root"])
+            f.download()
+            files.append(f)
+        return files
 
 class GdcpFile(object):
 
@@ -75,7 +88,7 @@ class GdcpFile(object):
         self.title = kwargs.get("title", None)
         self.parent = kwargs.get("parent", None)
         self.check_checksum = kwargs.get("checksum", True)
-        self.root = kwargs.get("root", True)
+        self.root = kwargs.get("root", None)
 
         if self.path:
             self.mimetype = guess_mimetype(self.path)
@@ -104,8 +117,7 @@ class GdcpFile(object):
             self._create_google_folder()
             allfiles = path_join(self.path, os.listdir(self.path))
             allfiles = [x for x in allfiles if not os.path.islink(x)]
-            for _file in allfiles:
-                self.gdcp.upload(path=_file, parent=self.id, checksum=self.check_checksum)
+            self.gdcp.upload(paths=allfiles, parent=self.id, checksum=self.check_checksum)
         else:
             # File
             media_body = self._create_media_body()
@@ -217,8 +229,8 @@ class GdcpFile(object):
             create_local_folder(self.path)
             query = "'%s' in parents and trashed = false" % self.id
             file_list = self.drive.ListFile({"q": query}).GetList()
-            for _file in file_list:
-                self.gdcp.download(id=_file["id"], checksum=self.check_checksum, root=self.path)
+            ids = [f["id"] for f in file_list]
+            self.gdcp.download(ids=ids, checksum=self.check_checksum, root=self.path)
         else:
             # File
             log.info("Downloading %s, size = %i, md5 = %s" % 
@@ -549,14 +561,15 @@ def list_root(drive, metadata, depth):
         if is_google_folder(subfile):
             list_file(drive, subfile, metadata, depth-1)
 
-def list_file_by_id(drive, file_id, metadata, depth):
+def list_file_by_id(drive, file_ids, metadata, depth):
     """
     Print metadata for a file given by ID
     """
-    file_id = find_id(file_id)
-    if file_id:
-        afile = drive.CreateFile({"id": file_id})
-        list_file(drive, afile, metadata, depth)
+    for file_id in file_ids:
+        file_id = find_id(file_id)
+        if file_id:
+            afile = drive.CreateFile({"id": file_id})
+            list_file(drive, afile, metadata, depth)
 
 def list_file(drive, curfile, metadata, depth):
     """
@@ -756,6 +769,17 @@ def find_id(id_string):
         id_string = match.groups()[0]
     return id_string
 
+def parse_id_args(id_args):
+    id_strings = []
+    for _id in id_args:
+        if _id == "-":
+            for line in sys.stdin:
+                parts = line.rstrip().split()
+                id_strings.extend(parts)
+        else:
+            id_strings.append(_id)
+    return id_strings
+
 # -----------------------------------------------------------------------------
 # Command-line interface functions
 # -----------------------------------------------------------------------------
@@ -809,8 +833,10 @@ def cli():
                 a -d value < 0.""")
     parser_list.add_argument(
         "-i", "--id",
+        default=[],
+        action="append",
         help="""File or folder ID. If not specified listing starts at Google
-                Drive root.""")
+                Drive root. - to read a list of IDs from STDIN.""")
     parser_list.set_defaults(func=cli_list_files)
 
     # Download
@@ -825,7 +851,9 @@ def cli():
         help="Verbose logging output")
     parser_download.add_argument(
         "-i", "--id",
-        help="File ID")
+        default=[],
+        action="append",
+        help="File ID. - to read a list of IDs from STDIN.")
     parser_download.add_argument(
         "-n", "--no_checksum",
         default=False,
@@ -895,8 +923,9 @@ def cli():
         action="store_true",
         help="""Apply exclude rules to folder titles in addition to file titles""")
     parser_upload.add_argument(
-        "file",
-        help="File/folder to upload")
+        "files",
+        nargs="+",
+        help="Files/folders to upload")
     parser_upload.set_defaults(func=cli_upload_file)
 
     args = parser.parse_args()
@@ -918,13 +947,14 @@ def cli_list_files(args):
     else:
         if args.all:
             error("list -a not compatible with -d")
-    
-        list_file_by_id(args.drive, args.id, metadata_list, args.depth)
+        ids = parse_id_args(args.id)
+        list_file_by_id(args.drive, ids, metadata_list, args.depth)
 
 def cli_download_file(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
-                exclude_folders=args.exclude_folders)
-    gdcp.download(id=args.id, checksum=not args.no_checksum, root=args.target)
+        exclude_folders=args.exclude_folders)
+    ids = parse_id_args(args.id)
+    files = gdcp.download(ids=ids, checksum=not args.no_checksum, root=args.target)
     if gdcp.failed():
         gdcp.print_failed()
         sys.exit(1)
@@ -933,13 +963,12 @@ def cli_download_file(args):
 
 def cli_upload_file(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
-                exclude_folders=args.exclude_folders)
-    if os.path.islink(args.file):
-        error("Uploading symbolic links not supported")
-    if os.path.isdir(args.file):
-        folder = title_from_path(args.file)
-    gdcp.upload(path=args.file, title=args.title,
-        parent=args.parent, checksum=not args.no_checksum)
+        exclude_folders=args.exclude_folders)
+    for f in args.files:
+        if os.path.islink(f):
+            error("Uploading symbolic links not supported")
+    files = gdcp.upload(paths=args.files, title=args.title, parent=args.parent,
+        checksum=not args.no_checksum)
     if gdcp.failed():
         gdcp.print_failed()
         sys.exit(1)
