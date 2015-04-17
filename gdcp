@@ -32,16 +32,16 @@ oauth2_client = logging.getLogger("oauth2client.client")
 oauth2_util = logging.getLogger("oauth2client.util")
 
 class Gdcp(object):
-    def __init__(self, drive, **kwargs):
+    def __init__(self, drive, excludes=[], include=False, exclude_folders=False):
         self.drive = drive
-        self.failures = {"HTTP": [], "MD5": []}
-        self.exclude_patterns = kwargs.get("excludes", [])
-        self.excludes = [re.compile(e) for e in self.exclude_patterns]
-        self.include = kwargs.get("include", False)
-
+        self.excludes = [re.compile(e) for e in excludes]
+        self.include = include
         # Should folders be considered in exclude rules?
         # By default rules only apply to files
-        self.exclude_folders = kwargs.get("exclude_folders", False)
+        self.exclude_folders = exclude_folders
+
+        self.files = []
+        self.failures = {"HTTP": [], "MD5": []}
 
     def failed(self):
         return bool(len(self.failures["HTTP"]) or len(self.failures["MD5"]))
@@ -54,47 +54,58 @@ class Gdcp(object):
             log.warning("%i files failed MD5 verification:\n%s" %
                         (len(self.failures["MD5"]), "\n".join(self.failures["MD5"])))
 
-    def upload(self, **kwargs):
-        files = []
-        paths = kwargs.get("paths", [])
+    def upload(self, paths=[], title=None, parent="root", checksum=True):
         if len(paths) > 1:
-            # Custom title turned off if more than one file
-            kwargs["title"] = None
-        for local_file in kwargs.get("paths", []):
-            parent = kwargs.get("parent", None)
-            checksum = kwargs["checksum"]
-            title = kwargs.get("title", None)
+            title = None  # custom title turned off if more than one file
+        for local_file in paths:
             f = GdcpFile(self, path=local_file, parent=parent, checksum=checksum, title=title)
             f.upload()
-            files.append(f)
-        return files
 
-    def download(self, **kwargs):
-        files = []
-        for _id in kwargs.get("ids", []):
-            f = GdcpFile(self, id=_id, checksum=kwargs["checksum"], root=kwargs["root"])
+    def download(self, ids=[], checksum=True, root="."):
+        for _id in ids:
+            f = GdcpFile(self, gid=_id, checksum=checksum, root=root)
             f.download()
-            files.append(f)
-        return files
+
+    def list(self, ids=[], metadata=[], depth=0):
+        for _id in ids:
+            f = GdcpFile(self, gid=_id)
+            f.list(metadata=metadata, depth=depth)
+
+    def list_all_files(self, metadata=[]):
+        """
+        Print metadata for all files in Google Drive
+        """
+        query = "trashed = false"
+        log.debug("query = '%s'" % query)
+        request = self.drive.auth.service.files().list(q=query, maxResults=460)
+        while request != None:
+            response = request.execute()
+            for i in response["items"]:
+                g = GdcpFile(self, response=i)
+                g.print_metadata(metadata)
+            request = self.drive.auth.service.files().list_next(request, response)
 
 class GdcpFile(object):
 
-    def __init__(self, gdcp, **kwargs):
+    def __init__(self, gdcp, gid=None, path=None, title=None, parent=None,
+        checksum=True, root=None, response=None):
         self.gdcp = gdcp
         self.drive = gdcp.drive
 
-        self.id = find_id(kwargs.get("id", None))
-        self.path = kwargs.get("path", None)
-        self.title = kwargs.get("title", None)
-        self.parent = kwargs.get("parent", None)
-        self.check_checksum = kwargs.get("checksum", True)
-        self.root = kwargs.get("root", None)
+        self.id = find_id(gid)
+        self.path = path
+        self.title = title
+        self.parent = parent
+        self.check_checksum = checksum
+        self.root = root
 
         if self.path:
             self.mimetype = guess_mimetype(self.path)
             self.fileSize = os.path.getsize(self.path)
         if self.title is None:
             self.title = title_from_path(self.path)
+
+        self._add_response(response)
 
         self.retry_limit = 6
         self.retries = 0
@@ -115,6 +126,7 @@ class GdcpFile(object):
         if self._is_folder():
             # Folder
             self._create_google_folder()
+            self.gdcp.files.append(self)  # Add this folder to Gdcp object
             allfiles = path_join(self.path, os.listdir(self.path))
             allfiles = [x for x in allfiles if not os.path.islink(x)]
             self.gdcp.upload(paths=allfiles, parent=self.id, checksum=self.check_checksum)
@@ -209,8 +221,11 @@ class GdcpFile(object):
                     self._check_md5()
             if self.fail_upload_flag or self.fail_md5_flag:
                 log.warning("Upload failed for %s" % self.path)
+            else:
+                self.gdcp.files.append(self)  # Add this file to Gdcp object
 
     def download(self):
+        # Make sure file metadata is present
         self._get_google_file_metadata()
 
         # Check for match against any exclude rules
@@ -227,6 +242,7 @@ class GdcpFile(object):
             # Folder
             log.info("Creating folder %s" % self.path)
             create_local_folder(self.path)
+            self.gdcp.files.append(self)  # Add this folder to Gdcp object
             query = "'%s' in parents and trashed = false" % self.id
             file_list = self.drive.ListFile({"q": query}).GetList()
             ids = [f["id"] for f in file_list]
@@ -298,11 +314,68 @@ class GdcpFile(object):
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
                 log.info("Downloaded 100.00%%.  %i bytes in %s (%.02fMB/s)" %
                  (self.fileSize, format_timedelta(t0, t2), rate))
+                self.gdcp.files.append(self)  # Add this file to Gdcp object
+
+
+    def list(self, metadata, depth=0, indent=""):
+        """
+        Print file listings starting at and including self.
+
+        If depth < -1 do nothing.
+        If depth == -1, only print this file.
+        If > -1 print this file and if this is a folder call list on each
+        child with depth - 1.
+        """
+        if depth >= 0:
+            self.print_metadata(metadata, indent)
+            if self._is_folder():
+                query = "trashed = false and '%s' in parents" % self.id
+                log.debug("query = '%s'" % query)
+                children = self._get_children()
+                for c in children:
+                    c.list(metadata, depth-1, indent=indent + "  ")
+        elif depth == -1:
+            self.print_metadata(metadata, indent)
+
+    def _get_children(self):
+        """
+        Return list of GdcfFile objects for this file's children
+        """
+        children = []
+        query = "trashed = false and '%s' in parents" % self.id
+        request = self.drive.auth.service.files().list(q=query, maxResults=460)
+        while request != None:
+            response = request.execute()
+            for i in response["items"]:
+                g = GdcpFile(self.gdcp)
+                g._add_response(i)
+                children.append(g)
+            request = self.drive.auth.service.files().list_next(request, response)
+        return children
+
+    def print_metadata(self, metadata, indent=""):
+        """
+        Print metadata for this file
+        """
+        self._get_google_file_metadata()
+        line = []
+        for prop in metadata:
+            try:
+                line.append("%s: %s" % (prop, remove_r_n(self.response[prop])))
+            except KeyError:
+                # Some files don't have common properties
+                # e.g. folders don't have a fileSize
+                # We don't want to throw an error for these cases
+                # error("Invalid metadata property " +
+                #       "'%s' in -m string '%s' " % (meta, metadata) +
+                #       "for file %s" % afile['title'])
+                pass
+        print indent + ", ".join(line)
 
     def _get_google_file_metadata(self):
-        if not hasattr(self, "response"):
+        if not hasattr(self, "response") and self.id:
             response = self.drive.auth.service.files().get(fileId=self.id).execute()
-        self._add_response(response)
+            self._add_response(response)
 
     def _create_google_folder(self):
         body = self._create_body()
@@ -318,15 +391,17 @@ class GdcpFile(object):
         For response keys/values see return object of get()
         https://developers.google.com/resources/api-libraries/documentation/drive/v2/python/latest/drive_v2.files.html#get
         """
-        self.response = response
-        self.id = response["id"]
-        self.title = response["title"]
-        self.google_md5Checksum = response.get("md5Checksum", None)
-        self.downloadUrl = response.get("downloadUrl", None)
-        self.fileSize = int(response.get("fileSize", 0))
-        self.mimetype = response["mimeType"]
+        if response:
+            self.response = response
+            self.id = response["id"]
+            self.title = response["title"]
+            self.google_md5Checksum = response.get("md5Checksum", None)
+            self.downloadUrl = response.get("downloadUrl", None)
+            self.fileSize = int(response.get("fileSize", 0))
+            self.mimetype = response["mimeType"]
 
     def _is_folder(self):
+        self._get_google_file_metadata()
         return self.mimetype == "application/vnd.google-apps.folder"
 
     def _create_media_body(self):
@@ -537,83 +612,8 @@ def do_setup(location=CONFIG_DIR):
         authorize()
 
 # -----------------------------------------------------------------------------
-# Google Drive interaction functions
-# -----------------------------------------------------------------------------
-def list_all_files(drive, metadata):
-    """
-    Print metadata for all files in Google Drive
-    """
-    query = "trashed = false"
-    log.debug("query = '%s'" % query)
-    files = drive.ListFile({"q": query}).GetList()
-    for afile in files:
-        print_one_file(afile, metadata)
-
-def list_root(drive, metadata, depth):
-    """
-    Print metadata for files in root of Google Drive
-    """
-    query = "trashed = false and 'root' in parents"
-    log.debug("query = '%s'" % query)
-    files = drive.ListFile({"q": query}).GetList()
-    for subfile in files:
-        print_one_file(subfile, metadata)
-        if is_google_folder(subfile):
-            list_file(drive, subfile, metadata, depth-1)
-
-def list_file_by_id(drive, file_ids, metadata, depth):
-    """
-    Print metadata for a file given by ID
-    """
-    for file_id in file_ids:
-        file_id = find_id(file_id)
-        if file_id:
-            afile = drive.CreateFile({"id": file_id})
-            list_file(drive, afile, metadata, depth)
-
-def list_file(drive, curfile, metadata, depth):
-    """
-    Print file listings starting at and including curfile.
-
-    If depth == 0, only print this file. If depth != 0 and afile is a folder,
-    call list_file on each child with depth-1. Essentially, descend to the bottom
-    of the directory tree if depth < 0, stop if depth = 0, and continue for
-    depth steps if depth > 0.
-    """
-    if depth >= 0:
-        if is_google_folder(curfile):
-            query = "trashed = false and '%s' in parents" % curfile["id"]
-            log.debug("query = '%s'" % query)
-            files = drive.ListFile({"q": query}).GetList()
-            for subfile in files:
-                print_one_file(subfile, metadata)
-                if is_google_folder(subfile):
-                    list_file(drive, subfile, metadata, depth-1)
-        else:
-            print_one_file(curfile, metadata)
-
-# -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
-def print_one_file(afile, metadata):
-    """
-    Print metadata for one file
-    """
-
-    line = []
-    for meta in metadata:
-        try:
-            line.append("%s: %s" % (meta, remove_r_n(afile[meta])))
-        except KeyError:
-            # Some files don't have common properties
-            # e.g. folders don't have a fileSize
-            # We don't want to throw an error for these cases
-            # error("Invalid metadata property " +
-            #       "'%s' in -m string '%s' " % (meta, metadata) +
-            #       "for file %s" % afile['title'])
-            pass
-    print ", ".join(line)
-
 def remove_r_n(some_string):
     some_string = some_string.replace("\r", "^M")
     some_string = some_string.replace("\n", "^M")
@@ -893,6 +893,7 @@ def cli():
         help="Verbose logging output")
     parser_upload.add_argument(
         "-p", "--parent",
+        default="root",
         metavar="ID",
         help="""Parent ID, i.e. containing folder ID. If not specified
              file will be placed in root folder.""")
@@ -937,29 +938,27 @@ def cli():
 
 def cli_list_files(args):
     metadata_list = args.metadata.split(",")
+    ids = parse_id_args(args.id)
+    gdcp = Gdcp(args.drive)
     if args.depth < 0:
         error("list -d must be >= 0")
-    if args.id is None:  # start at root
-        if args.all:
-            list_all_files(args.drive, metadata_list)
-        else:
-            list_root(args.drive, metadata_list, args.depth)
+    if args.all:  # start at root
+        gdcp.list_all_files(metadata_list)
     else:
-        if args.all:
-            error("list -a not compatible with -d")
-        ids = parse_id_args(args.id)
-        list_file_by_id(args.drive, ids, metadata_list, args.depth)
+        if len(ids) == 0:
+            ids.append("root")
+        gdcp.list(ids=ids, metadata=metadata_list, depth=args.depth)
 
 def cli_download_file(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
         exclude_folders=args.exclude_folders)
     ids = parse_id_args(args.id)
-    files = gdcp.download(ids=ids, checksum=not args.no_checksum, root=args.target)
+    gdcp.download(ids=ids, checksum=not args.no_checksum, root=args.target)
     if gdcp.failed():
         gdcp.print_failed()
         sys.exit(1)
     else:
-        log.info("All downloads were successful")
+        log.info("Downloaded %i files and folders" % len(gdcp.files))
 
 def cli_upload_file(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
@@ -967,13 +966,13 @@ def cli_upload_file(args):
     for f in args.files:
         if os.path.islink(f):
             error("Uploading symbolic links not supported")
-    files = gdcp.upload(paths=args.files, title=args.title, parent=args.parent,
+    gdcp.upload(paths=args.files, title=args.title, parent=args.parent,
         checksum=not args.no_checksum)
     if gdcp.failed():
         gdcp.print_failed()
         sys.exit(1)
     else:
-        log.info("All uploads were successful")
+        log.info("Uploaded %i files and folders" % len(gdcp.files))
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
