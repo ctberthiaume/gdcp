@@ -21,7 +21,7 @@ import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
@@ -109,7 +109,7 @@ class GdcpFile(object):
         self.id = find_id(gid)
         self.path = path
         self.title = title
-        self.parent = parent
+        self.parent = find_id(parent)
         self.check_checksum = checksum
         self.root = root
 
@@ -162,7 +162,8 @@ class GdcpFile(object):
                 while response is None:
                     try:
                         response = request.execute()
-                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError, httplib2.HttpLib2Error) as e:
+                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError, 
+                            httplib2.HttpLib2Error, httplib.BadStatusLine) as e:
                         # Create sensible error string
                         if hasattr(e, "resp"):
                             # apiclient.errors.HttpError has http response in resp
@@ -193,7 +194,8 @@ class GdcpFile(object):
                             prev_bytes_sent = self.bytes_sent
                             self._register_upload_chunk(status, t1)
                             log.debug("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
-                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError, httplib2.HttpLib2Error) as e:
+                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
+                            httplib2.HttpLib2Error, httplib.BadStatusLine) as e:
                         # Chunk upload threw an error, retry or restart
 
                         # Create sensible error string
