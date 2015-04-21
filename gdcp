@@ -392,6 +392,9 @@ class GdcpFile(object):
             "value": email
         }
         if root and first_pass:
+            # Inserting an ownership permission for the top-level folder
+            # will send an email and place the folder/file in the new owner's
+            # My Drive root folder, unless they already have write permission.
             body["role"] = "owner"
             insert_resp = self.drive.auth.service.permissions().insert(
                 fileId=self.id,
@@ -399,7 +402,11 @@ class GdcpFile(object):
             log.info("Transferred ownership of %s" % self.title)
         elif first_pass:
             # First time through file list make sure writer permission is
-            # inserted
+            # inserted. Suppress emails. If we just insert an ownership
+            # permission here first, and there wasn't already a write
+            # permission, the new owner will: 1) receive an email for every file,
+            # 2) the file will be placed in their My Drive root folder. Neither is
+            # desirable.
             body["role"] = "writer"
             insert_resp = self.drive.auth.service.permissions().insert(
                 fileId=self.id,
@@ -407,7 +414,9 @@ class GdcpFile(object):
                 sendNotificationEmails=False).execute()
             log.info("Granted write privileges for %s" % self.title)
         else:
-            # Second time through file list update permission to owner role
+            # Second time through file list update permission to owner role.
+            # Because the new owner already had write permission an email is
+            # not sent and a reference to the file is not placed in My Drive.
             body["role"] = "owner"
             owner_resp = self.drive.auth.service.permissions().update(
                 fileId=self.id,
