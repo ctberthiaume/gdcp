@@ -374,7 +374,7 @@ class GdcpFile(object):
                 #       "'%s' in -m string '%s' " % (meta, metadata) +
                 #       "for file %s" % afile['title'])
                 pass
-        print indent + ", ".join(line)
+        print indent + "\t".join(line)
 
     def transfer_ownership(self, email, permId):
         """
