@@ -80,7 +80,10 @@ class Gdcp(object):
             permId = permId_resp["id"]
         for _id in ids:
             f = GdcpFile(self, gid=_id)
-            f.transfer_ownership(email, permId)
+            f.transfer_ownership(email, permId, root=True, first_pass=True)
+        for _id in ids:
+            f = GdcpFile(self, gid=_id)
+            f.transfer_ownership(email, permId, root=True, first_pass=False)
 
     def list_all_files(self, metadata=[]):
         """
@@ -262,8 +265,6 @@ class GdcpFile(object):
             log.info("Creating folder %s" % self.path)
             create_local_folder(self.path)
             self.gdcp.files.append(self)  # Add this folder to Gdcp object
-            query = "'%s' in parents and trashed = false" % self.id
-            #file_list = self.drive.ListFile({"q": query}).GetList()
             children = self._get_children()
             for f in children:
                 f.root = self.path # reset root to be this file's path
@@ -349,8 +350,6 @@ class GdcpFile(object):
         if depth >= 0:
             self.print_metadata(metadata, indent)
             if self._is_folder():
-                query = "trashed = false and '%s' in parents" % self.id
-                log.debug("query = '%s'" % query)
                 children = self._get_children()
                 for c in children:
                     c.list(metadata, depth-1, indent=indent + "  ")
@@ -376,36 +375,50 @@ class GdcpFile(object):
                 pass
         print indent + "\t".join(line)
 
-    def transfer_ownership(self, email, permId):
+    def transfer_ownership(self, email, permId, root=True, first_pass=True):
         """
         Transfer file ownership to new_owner_email.
 
-        The account for new_owner_email must be in the same Google Apps domain,
-        and the new owner should already have write permissions on all files
-        to be transferred.
+        The account for new_owner_email must be in the same Google Apps domain.
         """
         # Check for match against any exclude rules
         if not self._passes_excludes():
             return
 
         body = {
-            "role": "owner",
             "type": "user",
             "value": email
         }
-        owner_resp = self.drive.auth.service.permissions().update(
-            fileId=self.id,
-            permissionId=permId,
-            body=body,
-            transferOwnership=True).execute()
-        self.gdcp.files.append(self)  # Add this file to Gdcp object
-        log.info("Transferred ownership of %s" % self.title)
+        if root and first_pass:
+            body["role"] = "owner"
+            insert_resp = self.drive.auth.service.permissions().insert(
+                fileId=self.id,
+                body=body).execute()
+            log.info("Transferred ownership of %s" % self.title)
+        elif first_pass:
+            # First time through file list make sure writer permission is
+            # inserted
+            body["role"] = "writer"
+            insert_resp = self.drive.auth.service.permissions().insert(
+                fileId=self.id,
+                body=body,
+                sendNotificationEmails=False).execute()
+            log.info("Granted write privileges for %s" % self.title)
+        else:
+            # Second time through file list update permission to owner role
+            body["role"] = "owner"
+            owner_resp = self.drive.auth.service.permissions().update(
+                fileId=self.id,
+                permissionId=permId,
+                body=body,
+                transferOwnership=True).execute()
+            self.gdcp.files.append(self)  # Add this file to Gdcp object
+            log.info("Transferred ownership of %s" % self.title)
 
         if self._is_folder():
-            query = "'%s' in parents and trashed = false" % self.id
             children = self._get_children()
             for f in children:
-                f.transfer_ownership(email, permId)
+                f.transfer_ownership(email, permId, root=False, first_pass=first_pass)
 
     @property
     def metadata(self):
@@ -448,7 +461,8 @@ class GdcpFile(object):
 
     def _ensure_google_file_metadata(self):
         """
-        Ensure that file metadata from Google is present
+        Ensure that file metadata from Google is present. Don't perform remote
+        API call if file metadata is already present.
         """
         if not self.metadata and self.id:
             log.debug("Ensure fired for %s" % self.title)
@@ -994,9 +1008,8 @@ def cli():
     # Transfer ownership
     parser_transfer = subparsers.add_parser(
         "transfer", 
-        help="""Transfer ownership of files or folders to a different account.
-             New owner should already have write permissions on all files to
-             be transferred.""",
+        help="""Transfer ownership of files or folders to a different account
+        within the same domain""",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_transfer.add_argument(
         "--verbose",
