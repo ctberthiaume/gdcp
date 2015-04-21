@@ -43,6 +43,9 @@ class Gdcp(object):
         self.files = []
         self.failures = {"HTTP": [], "MD5": []}
 
+        # https://developers.google.com/resources/api-libraries/documentation/drive/v2/python/latest/drive_v2.about.html
+        #self.about = drive.auth.service.about().get().execute()
+
     def failed(self):
         return bool(len(self.failures["HTTP"]) or len(self.failures["MD5"]))
 
@@ -71,6 +74,14 @@ class Gdcp(object):
             f = GdcpFile(self, gid=_id)
             f.list(metadata=metadata, depth=depth)
 
+    def transfer_ownership(self, ids, email, permId=None):
+        if not permId:
+            permId_resp = self.drive.auth.service.permissions().getIdForEmail(email=email).execute()
+            permId = permId_resp["id"]
+        for _id in ids:
+            f = GdcpFile(self, gid=_id)
+            f.transfer_ownership(email, permId)
+
     def list_all_files(self, metadata=[]):
         """
         Print metadata for all files in Google Drive
@@ -81,14 +92,14 @@ class Gdcp(object):
         while request != None:
             response = request.execute()
             for i in response["items"]:
-                g = GdcpFile(self, response=i)
+                g = GdcpFile(self, metadata=i)
                 g.print_metadata(metadata)
             request = self.drive.auth.service.files().list_next(request, response)
 
 class GdcpFile(object):
 
     def __init__(self, gdcp, gid=None, path=None, title=None, parent=None,
-        checksum=True, root=None, response=None):
+        checksum=True, root=None, metadata=None):
         self.gdcp = gdcp
         self.drive = gdcp.drive
 
@@ -105,7 +116,7 @@ class GdcpFile(object):
         if self.title is None:
             self.title = title_from_path(self.path)
 
-        self._add_response(response)
+        self._metadata = metadata
 
         self.retry_limit = 6
         self.retries = 0
@@ -117,6 +128,10 @@ class GdcpFile(object):
         self.fail_download_flag = False
 
     def upload(self):
+        """
+        Recursively upload a file/folder (self.path) to a Google Drive parent
+        folder whose ID is self.parent.
+        """
         # Check for match against any exclude rules
         if not self._passes_excludes():
             return
@@ -211,7 +226,7 @@ class GdcpFile(object):
                                 self._fail_upload()
                                 break
 
-            self._add_response(response)
+            self.metadata = response
             if response:
                 t2 = datetime.datetime.now()
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
@@ -225,8 +240,12 @@ class GdcpFile(object):
                 self.gdcp.files.append(self)  # Add this file to Gdcp object
 
     def download(self):
+        """
+        Recursively download a file/folder to local filesystem starting
+        at self.root.
+        """
         # Make sure file metadata is present
-        self._get_google_file_metadata()
+        self._ensure_google_file_metadata()
 
         # Check for match against any exclude rules
         if not self._passes_excludes():
@@ -244,9 +263,11 @@ class GdcpFile(object):
             create_local_folder(self.path)
             self.gdcp.files.append(self)  # Add this folder to Gdcp object
             query = "'%s' in parents and trashed = false" % self.id
-            file_list = self.drive.ListFile({"q": query}).GetList()
-            ids = [f["id"] for f in file_list]
-            self.gdcp.download(ids=ids, checksum=self.check_checksum, root=self.path)
+            #file_list = self.drive.ListFile({"q": query}).GetList()
+            children = self._get_children()
+            for f in children:
+                f.root = self.path # reset root to be this file's path
+                f.download()
         else:
             # File
             log.info("Downloading %s, size = %i, md5 = %s" % 
@@ -316,7 +337,6 @@ class GdcpFile(object):
                  (self.fileSize, format_timedelta(t0, t2), rate))
                 self.gdcp.files.append(self)  # Add this file to Gdcp object
 
-
     def list(self, metadata, depth=0, indent=""):
         """
         Print file listings starting at and including self.
@@ -337,31 +357,15 @@ class GdcpFile(object):
         elif depth == -1:
             self.print_metadata(metadata, indent)
 
-    def _get_children(self):
-        """
-        Return list of GdcfFile objects for this file's children
-        """
-        children = []
-        query = "trashed = false and '%s' in parents" % self.id
-        request = self.drive.auth.service.files().list(q=query, maxResults=460)
-        while request != None:
-            response = request.execute()
-            for i in response["items"]:
-                g = GdcpFile(self.gdcp)
-                g._add_response(i)
-                children.append(g)
-            request = self.drive.auth.service.files().list_next(request, response)
-        return children
-
     def print_metadata(self, metadata, indent=""):
         """
         Print metadata for this file
         """
-        self._get_google_file_metadata()
+        self._ensure_google_file_metadata()
         line = []
         for prop in metadata:
             try:
-                line.append("%s: %s" % (prop, remove_r_n(self.response[prop])))
+                line.append("%s: %s" % (prop, remove_r_n(self.metadata[prop])))
             except KeyError:
                 # Some files don't have common properties
                 # e.g. folders don't have a fileSize
@@ -372,19 +376,43 @@ class GdcpFile(object):
                 pass
         print indent + ", ".join(line)
 
-    def _get_google_file_metadata(self):
-        if not hasattr(self, "response") and self.id:
-            response = self.drive.auth.service.files().get(fileId=self.id).execute()
-            self._add_response(response)
+    def transfer_ownership(self, email, permId):
+        """
+        Transfer file ownership to new_owner_email.
 
-    def _create_google_folder(self):
-        body = self._create_body()
-        log.debug("About to create folder %s" % body)
-        response = self.drive.auth.service.files().insert(body=body).execute()
-        log.info("Created folder %s" % self.title)
-        self._add_response(response)
+        The account for new_owner_email must be in the same Google Apps domain,
+        and the new owner should already have write permissions on all files
+        to be transferred.
+        """
+        # Check for match against any exclude rules
+        if not self._passes_excludes():
+            return
 
-    def _add_response(self, response):
+        body = {
+            "role": "owner",
+            "type": "user",
+            "value": email
+        }
+        owner_resp = self.drive.auth.service.permissions().update(
+            fileId=self.id,
+            permissionId=permId,
+            body=body,
+            transferOwnership=True).execute()
+        self.gdcp.files.append(self)  # Add this file to Gdcp object
+        log.info("Transferred ownership of %s" % self.title)
+
+        if self._is_folder():
+            query = "'%s' in parents and trashed = false" % self.id
+            children = self._get_children()
+            for f in children:
+                f.transfer_ownership(email, permId)
+
+    @property
+    def metadata(self):
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, response):
         """
         Add response for file metadata from Google Drive
 
@@ -392,7 +420,7 @@ class GdcpFile(object):
         https://developers.google.com/resources/api-libraries/documentation/drive/v2/python/latest/drive_v2.files.html#get
         """
         if response:
-            self.response = response
+            self._metadata = response
             self.id = response["id"]
             self.title = response["title"]
             self.google_md5Checksum = response.get("md5Checksum", None)
@@ -400,8 +428,42 @@ class GdcpFile(object):
             self.fileSize = int(response.get("fileSize", 0))
             self.mimetype = response["mimeType"]
 
+    def _get_children(self):
+        """
+        Return list of GdcfFile objects for this file's children
+        """
+        children = []
+        query = "trashed = false and '%s' in parents" % self.id
+        request = self.drive.auth.service.files().list(q=query, maxResults=460)
+        while request != None:
+            response = request.execute()
+            for i in response["items"]:
+                g = GdcpFile(self.gdcp) # child inherits Gdcp object
+                g.metadata = i
+                g.check_checksum = self.check_checksum # child inherits check_checksum
+                g.root = self.root # child inherits root
+                children.append(g)
+            request = self.drive.auth.service.files().list_next(request, response)
+        return children
+
+    def _ensure_google_file_metadata(self):
+        """
+        Ensure that file metadata from Google is present
+        """
+        if not self.metadata and self.id:
+            log.debug("Ensure fired for %s" % self.title)
+            response = self.drive.auth.service.files().get(fileId=self.id).execute()
+            self.metadata = response
+
+    def _create_google_folder(self):
+        body = self._create_body()
+        log.debug("About to create folder %s" % body)
+        response = self.drive.auth.service.files().insert(body=body).execute()
+        log.info("Created folder %s" % self.title)
+        self.metadata = response
+
     def _is_folder(self):
-        self._get_google_file_metadata()
+        self._ensure_google_file_metadata()
         return self.mimetype == "application/vnd.google-apps.folder"
 
     def _create_media_body(self):
@@ -837,12 +899,12 @@ def cli():
         action="append",
         help="""File or folder ID. If not specified listing starts at Google
                 Drive root. - to read a list of IDs from STDIN.""")
-    parser_list.set_defaults(func=cli_list_files)
+    parser_list.set_defaults(func=cli_list)
 
     # Download
     parser_download = subparsers.add_parser(
         "download", 
-        help="Download a file from Google Drive",
+        help="Download files from Google Drive",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_download.add_argument(
         "--verbose",
@@ -879,12 +941,12 @@ def cli():
     parser_download.add_argument(
         "target",
         help="Destination directory")
-    parser_download.set_defaults(func=cli_download_file)
+    parser_download.set_defaults(func=cli_download)
 
     # Upload
     parser_upload = subparsers.add_parser(
         "upload", 
-        help="Upload a file or folder to Google Drive",
+        help="Upload files to Google Drive",
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser_upload.add_argument(
         "--verbose",
@@ -927,7 +989,30 @@ def cli():
         "files",
         nargs="+",
         help="Files/folders to upload")
-    parser_upload.set_defaults(func=cli_upload_file)
+    parser_upload.set_defaults(func=cli_upload)
+
+    # Transfer ownership
+    parser_transfer = subparsers.add_parser(
+        "transfer", 
+        help="""Transfer ownership of files or folders to a different account.
+             New owner should already have write permissions on all files to
+             be transferred.""",
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser_transfer.add_argument(
+        "--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+    parser_transfer.add_argument(
+        "-i", "--id",
+        default=[],
+        action="append",
+        help="File ID. - to read a list of IDs from STDIN.")
+    parser_transfer.add_argument(
+        "-e",
+        "--email",
+        help="""Google Apps account email address of new owner""")
+    parser_transfer.set_defaults(func=cli_transfer_ownership)
 
     args = parser.parse_args()
     if args.subcommand_name != "version":
@@ -936,7 +1021,7 @@ def cli():
             verbose()
     args.func(args)
 
-def cli_list_files(args):
+def cli_list(args):
     metadata_list = args.metadata.split(",")
     ids = parse_id_args(args.id)
     gdcp = Gdcp(args.drive)
@@ -949,7 +1034,7 @@ def cli_list_files(args):
             ids.append("root")
         gdcp.list(ids=ids, metadata=metadata_list, depth=args.depth)
 
-def cli_download_file(args):
+def cli_download(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
         exclude_folders=args.exclude_folders)
     ids = parse_id_args(args.id)
@@ -960,7 +1045,7 @@ def cli_download_file(args):
     else:
         log.info("Downloaded %i files and folders" % len(gdcp.files))
 
-def cli_upload_file(args):
+def cli_upload(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
         exclude_folders=args.exclude_folders)
     for f in args.files:
@@ -973,6 +1058,12 @@ def cli_upload_file(args):
         sys.exit(1)
     else:
         log.info("Uploaded %i files and folders" % len(gdcp.files))
+
+def cli_transfer_ownership(args):
+    gdcp = Gdcp(args.drive)
+    ids = parse_id_args(args.id)
+    gdcp.transfer_ownership(ids, args.email)
+    log.info("Transferred ownership for %i files" % len(gdcp.files))
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
