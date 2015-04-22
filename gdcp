@@ -852,9 +852,6 @@ def calc_transfer_rate(t1, t2, file_size):
         rate = 0.00
     return rate
 
-def is_google_folder(afile):
-    return afile["mimeType"] == "application/vnd.google-apps.folder"
-
 def find_id(id_string):
     """
     Return file ID from common URLs or URL fragments which contain the ID.
