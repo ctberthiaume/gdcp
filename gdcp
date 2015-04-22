@@ -14,12 +14,14 @@ import random
 import mimetypes
 import httplib
 import httplib2
+import socket
 import ssl
 import apiclient.errors
 import apiclient.http
 import oauth2client.client
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
+import backoff
 
 VERSION = "0.6.1"
 PROJ = "gdcp"  # name of this project
@@ -30,6 +32,7 @@ log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
 oauth2_client = logging.getLogger("oauth2client.client")
 oauth2_util = logging.getLogger("oauth2client.util")
+backoff_log = logging.getLogger('backoff')
 
 class Gdcp(object):
     def __init__(self, drive, excludes=[], include=False, exclude_folders=False):
@@ -87,7 +90,7 @@ class Gdcp(object):
         log.debug("query = '%s'" % query)
         request = self.drive.auth.service.files().list(q=query, maxResults=460)
         while request != None:
-            response = request.execute()
+            response = excute_request(request)
             for i in response["items"]:
                 g = GdcpFile(self, metadata=i)
                 g.print_metadata(metadata)
@@ -464,7 +467,7 @@ class GdcpFile(object):
         query = "trashed = false and '%s' in parents" % self.id
         request = self.drive.auth.service.files().list(q=query, maxResults=460)
         while request != None:
-            response = request.execute()
+            response = execute_request(request)
             for i in response["items"]:
                 g = GdcpFile(self.gdcp) # child inherits Gdcp object
                 g.metadata = i
@@ -481,15 +484,19 @@ class GdcpFile(object):
         """
         if not self.metadata and self.id:
             log.debug("Ensure fired for %s, %s" % (self.id, self.title))
-            response = self.drive.auth.service.files().get(fileId=self.id).execute()
+            request = self.drive.auth.service.files().get(fileId=self.id)
+            response = execute_request(request)
             self.metadata = response
 
     def _create_google_folder(self):
         body = self._create_body()
         log.debug("About to create folder %s" % body)
-        response = self.drive.auth.service.files().insert(body=body).execute()
+        request = self.drive.auth.service.files().insert(body=body)
+        response = execute_request(request)
+        # Sometimes folders take a while to become available. Try to get metadata
+        # from Google to make sure it's available before moving on
+        self._ensure_google_file_metadata()
         log.info("Created folder %s" % self.title)
-        self.metadata = response
 
     def _is_folder(self):
         self._ensure_google_file_metadata()
@@ -625,6 +632,9 @@ def configure_logging():
     # new_request() takes at most 1 positional argument (6 given)
     # set to error here to ignore
     oauth2_util.setLevel(logging.ERROR)
+    backoff_handler = logging.StreamHandler()
+    backoff_handler.setFormatter(formatter)
+    backoff_log.addHandler(backoff_handler)
 
     main_handler = logging.StreamHandler()
     main_handler.setFormatter(formatter)
@@ -635,6 +645,7 @@ def verbose():
     googleapi.setLevel(logging.INFO)
     oauth2_client.setLevel(logging.INFO)
     oauth2_util.setLevel(logging.INFO)
+    backoff_log.setLevel(logging.INFO)
     log.setLevel(logging.DEBUG)
 
 def configure_signals():
@@ -702,6 +713,12 @@ def do_setup(location=CONFIG_DIR):
 # -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
+@backoff.on_exception(backoff.expo, apiclient.errors.HttpError, max_tries=6)
+@backoff.on_exception(backoff.expo, httplib2.HttpLib2Error, max_tries=6)
+@backoff.on_exception(backoff.expo, socket.error, max_tries=6)
+def execute_request(request):
+    return request.execute()
+
 def delay(retries):
     return (2 ** retries) + random.random()
 
