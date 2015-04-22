@@ -495,8 +495,10 @@ class GdcpFile(object):
         response = execute_request(request)
         # Sometimes folders take a while to become available. Try to get metadata
         # from Google to make sure it's available before moving on
-        self._ensure_google_file_metadata()
-        log.info("Created folder %s" % self.title)
+        request = self.drive.auth.service.files().get(fileId=response["id"])
+        response = execute_request(request)
+        self.metadata = response
+        log.info("Created folder %s %s" % (self.title, self.id))
 
     def _is_folder(self):
         self._ensure_google_file_metadata()
