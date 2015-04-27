@@ -54,11 +54,13 @@ class Gdcp(object):
 
     def print_failed(self):
         if len(self.failures["HTTP"]):
+            failures = "\n".join([f.title for f in self.failures["HTTP"]])
             log.warning("%i files failed to transfer:\n%s" %
-                        (len(self.failures["HTTP"]), "\n".join(self.failures["HTTP"])))
+                        (len(self.failures["HTTP"]), failures))
         if len(self.failures["MD5"]):
+            failures = "\n".join([f.title for f in self.failures["MD5"]])
             log.warning("%i files failed MD5 verification:\n%s" %
-                        (len(self.failures["MD5"]), "\n".join(self.failures["MD5"])))
+                        (len(self.failures["MD5"]), failures))
 
     def upload(self, paths=[], title=None, parent="root", checksum=True):
         if len(paths) > 1:
@@ -654,13 +656,11 @@ def configure_signals():
     """
     Signal handling
 
-    Reset SIGINT and SIGPIPE to defaults
+    Reset SIGINT to default
 
     Don't raise KeyboardInterrupt exception on SIGINT
-    Dont' raise IOError on SIGPIPE
     """
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 def authorize(location=CONFIG_DIR):
     # Authentication
