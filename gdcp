@@ -57,9 +57,13 @@ class Gdcp(object):
             failures = "\n".join([f.title for f in self.failures["HTTP"]])
             log.warning("%i files failed to transfer:\n%s" %
                         (len(self.failures["HTTP"]), failures))
+            stdoutn("%i files failed to transfer:\n%s" %
+                        (len(self.failures["HTTP"]), failures))
         if len(self.failures["MD5"]):
             failures = "\n".join([f.title for f in self.failures["MD5"]])
             log.warning("%i files failed MD5 verification:\n%s" %
+                        (len(self.failures["MD5"]), failures))
+            stdoutn("%i files failed MD5 verification:\n%s" %
                         (len(self.failures["MD5"]), failures))
 
     def upload(self, paths=[], title=None, parent="root", checksum=True):
@@ -153,32 +157,22 @@ class GdcpFile(object):
             t0 = datetime.datetime.now()
 
             retries = 0
+            complete_retries = 0
             response = None
 
+            stdout("%s %.02f%% (%.02fMB/s)" % (self.title, 0.00, 0.00))
             if self.fileSize == 0:
                 # zero size files don't do resumable chunked uploads
                 request = self.drive.auth.service.files().insert(body=body)
                 while response is None:
                     try:
-                        response = request.execute()
+                        response = execute_upload_request(request)
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError, 
-                            httplib2.HttpLib2Error, httplib.BadStatusLine) as e:
-                        # Create sensible error string
-                        if hasattr(e, "resp"):
-                            # apiclient.errors.HttpError has http response in resp
-                            err_msg = "HTTP %i" % e.resp.status
-                        else:
-                            err_msg = "Error %s" % e
-                        if retries < self.retry_limit:
-                            log.warning("%s, restarting upload in %is" % (err_msg, delay(retries)))
-                            time.sleep(delay(retries))
-                            retries += 1
-                            request = self.drive.auth.service.files().insert(body=body)
-                        else:
-                            # No more retries left, abort
-                            log.warning("%s, aborting" % err_msg)
-                            self._fail_upload()
-                            break
+                            httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
+                        self._fail_upload()
+                        break
+                if not self.fail_upload_flag:
+                    stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, 100.00, 0.00))
             else:
                 # File is not empty, do resumable chunked upload
                 request = self.drive.auth.service.files().insert(body=body, media_body=media_body)
@@ -194,14 +188,14 @@ class GdcpFile(object):
                             self._register_upload_chunk(status, t1)
                             log.debug("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
-                            httplib2.HttpLib2Error, httplib.BadStatusLine) as e:
+                            httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
                         # Chunk upload threw an error, retry or restart
 
                         # Create sensible error string
                         if hasattr(e, "resp"):
-                            err_msg = "HTTP %i" % e.resp.status
+                            err_msg = "%s %i" % (type(e).__name__, e.resp.status)
                         else:
-                            err_msg = "Error %s" % e
+                            err_msg = "%s %s" % (type(e).__name__, e)
 
                         if hasattr(e, "resp") and e.resp.status in [500, 502, 503, 504]:
                             # Retry this chunk
@@ -216,12 +210,13 @@ class GdcpFile(object):
                                 break
                         else:
                             # Restart upload
-                            if retries < self.retry_limit:
-                                log.warning("%s, restarting upload in %is" % (err_msg, delay(retries)))
-                                time.sleep(delay(retries))
+                            if complete_retries < self.retry_limit:
+                                log.warning("%s, restarting upload in %is" % (err_msg, delay(complete_retries)))
+                                time.sleep(delay(complete_retries))
                                 self.prev_progress = 0.00
                                 self.bytes_sent = 0
-                                retries += 1
+                                complete_retries += 1
+                                retries = 0
                                 request = self.drive.auth.service.files().insert(body=body, media_body=media_body)
                             else:
                                 # No more retries left, abort
@@ -233,12 +228,17 @@ class GdcpFile(object):
             if response:
                 t2 = datetime.datetime.now()
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
+                stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, 100.00, rate))
                 log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s) %s" %
                     (self.fileSize, format_timedelta(t0, t2), rate, self.id))
+                stdoutn()
                 if self.check_checksum:
                     self._check_md5()
+            else:
+                stdoutn()
             if self.fail_upload_flag or self.fail_md5_flag:
                 log.warning("Upload failed for %s" % self.path)
+                stdoutn("%s upload failed" % self.path)
             else:
                 self.gdcp.files.append(self)  # Add this file to Gdcp object
 
@@ -255,15 +255,14 @@ class GdcpFile(object):
             return
 
         if not os.path.exists(self.root):
-            create_local_folder(self.root)
+            self._create_local_folder(folder_path=self.root)
 
         self.path = os.path.join(self.root, self.title)
         self.path = de_duplicate_path_name(self.path)
 
         if self._is_folder():
             # Folder
-            log.info("Creating folder %s" % self.path)
-            create_local_folder(self.path)
+            self._create_local_folder()
             self.gdcp.files.append(self)  # Add this folder to Gdcp object
             children = self._get_children()
             for f in children:
@@ -271,8 +270,9 @@ class GdcpFile(object):
                 f.download()
         else:
             # File
-            log.info("Downloading %s, size = %i, md5 = %s" % 
-                (self.path, self.fileSize, self.google_md5Checksum))
+            stdout("%s %.02f%% (%.02fMB/s)" % (self.title, 0.00, 0.00))
+            log.info("Downloading %s, size = %i, md5 = %s, id = %s" % 
+                (self.path, self.fileSize, self.google_md5Checksum, self.id))
 
             t0 = datetime.datetime.now()
             retries = 0
@@ -282,28 +282,21 @@ class GdcpFile(object):
             with open(self.path, "wb") as fh:
                 while self.bytes_received < self.fileSize:
                     t1 = datetime.datetime.now()
-                    headers = {
-                        "range": "bytes=%i-%i" % (bytes_start, bytes_end),
-                        "content-type": "application/octet-stream"
-                    }
-
+                    
                     try:
-                        response, content = self.drive.auth.service._http.request(self.downloadUrl, method="GET", headers=headers)
+                        response, content = execute_download_request(self.drive.auth.service._http,
+                            self.downloadUrl, bytes_start, bytes_end)
                     except httplib.IncompleteRead as e:
-                        if retries < self.retry_limit:
-                            log.warning("Exception %s, retrying bytes %i-%i in %is" %
-                                        (e, bytes_start, bytes_end, delay(retries)))
-                            time.sleep(delay(retries))
-                            retries += 1
-                            continue
-                        else:
-                            log.warning("Exception %s, aborting" % e)
-                            self._fail_download()
-                            fh.close()
-                            os.remove(self.path)
-                            break
-
-                    if response.status in [206, 200]:
+                        self._fail_download()
+                        fh.close()
+                        os.remove(self.path)
+                        break
+                    if response_is_bad([response, content]):
+                        self._fail_download()
+                        fh.close()
+                        os.remove(self.path)
+                        break
+                    else:
                         fh.write(content)
                         log.debug("Downloaded bytes %i-%i with status %s" %
                             (bytes_start, bytes_end, response.status))
@@ -311,20 +304,8 @@ class GdcpFile(object):
                         self._register_download_chunk(t1, bytes_end - bytes_start + 1)
                         bytes_start = bytes_end + 1
                         bytes_end = min(max(self.fileSize - 1, 0), bytes_start + CHUNKSIZE - 1)
-                        
-                    else:
-                        if retries < self.retry_limit:
-                            log.warning("HTTP error %i, retrying bytes %i-%i in %is" %
-                                        (response.status, bytes_start, bytes_end, delay(retries)))
-                            time.sleep(delay(retries))
-                            retries += 1
-                        else:
-                            log.warning("HTTP error %i, aborting" % response.status)
-                            self._fail_download()
-                            fh.close()
-                            os.remove(self.path)
-                            break
 
+            stdoutn()
             t2 = datetime.datetime.now()
 
             if not self.fail_download_flag:
@@ -333,6 +314,7 @@ class GdcpFile(object):
                         self._check_md5()
             if self.fail_download_flag or self.fail_md5_flag:
                 log.warning("Download failed for %s" % self.path)
+                stdoutn("%s download failed" % self.path)
             else:
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
                 log.info("Downloaded 100.00%%.  %i bytes in %s (%.02fMB/s)" %
@@ -393,9 +375,10 @@ class GdcpFile(object):
             # will send an email and place the folder/file in the new owner's
             # My Drive root folder, unless they already have write permission.
             body["role"] = "owner"
-            insert_resp = self.drive.auth.service.permissions().insert(
+            request = self.drive.auth.service.permissions().insert(
                 fileId=self.id,
-                body=body).execute()
+                body=body)
+            insert_resp = execute_request(request)
         else:
             # First make sure writer permission is inserted. Suppress emails.
             # If we just insert an ownership permission here first, and there
@@ -404,35 +387,25 @@ class GdcpFile(object):
             # 2) the file will be placed in their My Drive root folder. Neither is
             # desirable.
             body["role"] = "writer"
-            insert_resp = self.drive.auth.service.permissions().insert(
+            request = self.drive.auth.service.permissions().insert(
                 fileId=self.id,
                 body=body,
-                sendNotificationEmails=False).execute()
+                sendNotificationEmails=False)
+            insert_resp = execute_request(request)
             log.debug("Granted write privileges for %s" % self.title)
             # Now update permission to owner role. Because the new owner
             # already had write permission an email is not sent and a
             # reference to the file is not placed in My Drive.
             permId = insert_resp["id"]
             body["role"] = "owner"
-            owner_resp = None
-            retries = 0
-            while owner_resp is None:
-                try:
-                    owner_resp = self.drive.auth.service.permissions().update(
-                        fileId=self.id,
-                        permissionId=permId,
-                        body=body,
-                        transferOwnership=True).execute()
-                except apiclient.errors.HttpError as e:
-                    if retries < self.retry_limit:                    
-                        log.debug("Could not update permissionId %s, retrying in %s" % (permId, delay(retries)))
-                        # If the write permission was just inserted above
-                        # it may not be available for updating, wait and try again
-                        time.sleep(delay(retries))
-                        retries += 1
-                    else:
-                        error("Could not get permission for permissionId %s" % permId)
+            request = self.drive.auth.service.permissions().update(
+                fileId=self.id,
+                permissionId=permId,
+                body=body,
+                transferOwnership=True)
+            owner_resp = execute_request(request)
         self.gdcp.files.append(self)  # Add this file to Gdcp object
+        stdoutn("%s transferred" % self.title)
         log.info("Transferred ownership of %s" % self.title)
 
         if self._is_folder():
@@ -491,6 +464,9 @@ class GdcpFile(object):
             self.metadata = response
 
     def _create_google_folder(self):
+        """
+        Create a folder in Google Drive
+        """
         body = self._create_body()
         log.debug("About to create folder %s" % body)
         request = self.drive.auth.service.files().insert(body=body)
@@ -500,7 +476,28 @@ class GdcpFile(object):
         request = self.drive.auth.service.files().get(fileId=response["id"])
         response = execute_request(request)
         self.metadata = response
+        stdoutn("%s created" % self.title)
         log.info("Created folder %s %s" % (self.title, self.id))
+
+    def _create_local_folder(self, path=None):
+        """
+        Create a local folder
+        """
+        if path:
+            folder_path = path
+        else:
+            folder_path = self.path
+
+        try:
+            os.makedirs(folder_path)
+        except OSError as e:
+            error("Could not create directory %s. Perhaps it already exists."
+                  % folder_path)
+        if path:
+            log.info("Created folder %s" % folder_path)
+        else:
+            log.info("Created folder %s %s" % (folder_path, self.id))
+        stdoutn("%s" % folder_path)
 
     def _is_folder(self):
         self._ensure_google_file_metadata()
@@ -528,13 +525,16 @@ class GdcpFile(object):
             cur_progress = float(self.bytes_received) / self.fileSize * 100
         except ZeroDivisionError:
             cur_progress = 100.00
+
+        t_tmp = datetime.datetime.now()
+        rate = calc_transfer_rate(t1, t_tmp, bytes_this_chunk)
+
         # Only print progress every 5% or greater
         if cur_progress - self.prev_progress > 5.0 and cur_progress < 100.00:
-            t_tmp = datetime.datetime.now()
-            rate = calc_transfer_rate(t1, t_tmp, bytes_this_chunk)
-            log.info("Downloaded %.02f%% (%.02fMB/s)" %
-                     (cur_progress, rate))
+            log.info("Downloaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
             self.prev_progress = cur_progress
+        
+        stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, cur_progress, rate))
 
     def _register_upload_chunk(self, status, t1):
         """
@@ -542,19 +542,23 @@ class GdcpFile(object):
         """
         cur_progress = status.progress() * 100
         self.bytes_sent = min(self.bytes_sent + CHUNKSIZE, self.fileSize)
+
         # Only print progress every 5% or greater
         diff_progress = cur_progress - self.prev_progress
+        t_tmp = datetime.datetime.now()
+        rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
         if diff_progress > 5.0 and cur_progress < 100.00:
-            t_tmp = datetime.datetime.now()
-            rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
             log.info("Uploaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
             self.prev_progress = cur_progress
+
+        stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, cur_progress, rate))
 
     def _check_md5(self):
         """
         Confirm that response MD5 from Google matches MD5 for local
         file
         """
+        stdout("%s MD5 ..." % self.title)
         log.info("Calculating MD5 checksum for %s" % self.path)
         try:
             output = subprocess.check_output(["openssl", "md5", self.path],
@@ -564,10 +568,14 @@ class GdcpFile(object):
                   output.rstrip())
         self.local_md5Checksum = output.split()[-1]
         if self.local_md5Checksum == self.google_md5Checksum:
+            stdoutr("%s MD5 ... OK" % self.title)
+            stdoutn()
             log.info("MD5 OK.  %s (local) == %s" %
                      (self.local_md5Checksum, self.google_md5Checksum))
             return True
         else:
+            stdoutr("%s MD5 ... FAIL" % self.title)
+            stdoutn()
             log.warning("MD5 failed.  %s (local) != %s" %
                         (self.local_md5Checksum, self.google_md5Checksum))
             self._fail_md5()
@@ -639,11 +647,13 @@ def configure_logging():
     backoff_handler = logging.StreamHandler()
     backoff_handler.setFormatter(formatter)
     backoff_log.addHandler(backoff_handler)
+    backoff_log.setLevel(logging.WARNING)
 
     main_handler = logging.StreamHandler()
     main_handler.setFormatter(formatter)
     log.addHandler(main_handler)
     log.setLevel(logging.INFO)
+    #log.setLevel(logging.CRITICAL)
 
 def verbose():
     googleapi.setLevel(logging.INFO)
@@ -721,6 +731,44 @@ def do_setup(location=CONFIG_DIR):
 def execute_request(request):
     return request.execute()
 
+@backoff.on_exception(backoff.expo, apiclient.errors.HttpError, max_tries=6)
+@backoff.on_exception(backoff.expo, KeyError, max_tries=6)
+@backoff.on_exception(backoff.expo, ssl.SSLError, max_tries=6)
+@backoff.on_exception(backoff.expo, httplib.BadStatusLine, max_tries=6)
+@backoff.on_exception(backoff.expo, httplib2.HttpLib2Error, max_tries=6)
+@backoff.on_exception(backoff.expo, socket.error, max_tries=6)
+def execute_upload_request(request):
+    raise KeyError
+    return request.execute()
+
+def response_is_bad(response):
+    """
+    Return True if response status is not 206 or 200.
+
+    response is return value from httplib2.http.request GET call, which
+    is a two-item list of [response, content]
+    """
+    return not (response[0].status in [206, 200])
+
+@backoff.on_exception(backoff.expo, httplib.IncompleteRead, max_tries=6)
+@backoff.on_predicate(backoff.expo, response_is_bad, max_tries=6)
+def execute_download_request(h, url, bytes_start, bytes_end):
+    """
+    Perform GET with httplib2.http object
+
+    Args:
+      h = authenticated httplib2.http object
+      url = URL to download from
+      bytes_start = first byte in range starting at 0
+      bytes_end = last byte in range
+    """
+    headers = {
+        "range": "bytes=%i-%i" % (bytes_start, bytes_end),
+        "content-type": "application/octet-stream"
+    }
+    # Returns [response, content]
+    return h.request(url, method="GET", headers=headers)
+
 def delay(retries):
     return (2 ** retries) + random.random()
 
@@ -791,16 +839,6 @@ def de_duplicate_path_name(old_path):
         new_path = de_duplicate_path_name(new_path)
     
     return new_path
-
-def create_local_folder(folder_path):
-    """
-    Create a local folder
-    """
-    try:
-        os.makedirs(folder_path)
-    except OSError as e:
-        error("Could not create directory %s. Perhaps it already exists."\
-              % folder_path)
 
 def chdir(folder_path):
     try:
@@ -886,6 +924,22 @@ def parse_id_args(id_args):
         else:
             id_strings.append(_id)
     return id_strings
+
+def stdoutr(msg=""):
+    """Rewrite current line on STDOUT with no terminating newline"""
+    sys.stdout.write("\r%s" % " " * 1024)  # wipe line
+    sys.stdout.write("\r%s" % msg)
+    sys.stdout.flush()
+
+def stdoutn(msg=""):
+    """Write to STDOUT with terminating newline"""
+    sys.stdout.write("%s\n" % msg)
+    sys.stdout.flush()
+
+def stdout(msg=""):
+    """Write to STDOUT with no terminating newline"""
+    sys.stdout.write("%s" % msg)
+    sys.stdout.flush()
 
 # -----------------------------------------------------------------------------
 # Command-line interface functions
@@ -1087,6 +1141,7 @@ def cli_download(args):
         gdcp.print_failed()
         sys.exit(1)
     else:
+        stdoutn("Downloaded %i files and folders" % len(gdcp.files))
         log.info("Downloaded %i files and folders" % len(gdcp.files))
 
 def cli_upload(args):
@@ -1101,6 +1156,7 @@ def cli_upload(args):
         gdcp.print_failed()
         sys.exit(1)
     else:
+        stdoutn("Uploaded %i files and folders" % len(gdcp.files))
         log.info("Uploaded %i files and folders" % len(gdcp.files))
 
 def cli_transfer_ownership(args):
@@ -1108,6 +1164,7 @@ def cli_transfer_ownership(args):
     ids = parse_id_args(args.id)
     gdcp.transfer_ownership(ids, args.email)
     log.info("Transferred ownership for %i files" % len(gdcp.files))
+    stdoutn("Transferred ownership for %i files" % len(gdcp.files))
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
