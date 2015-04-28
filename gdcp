@@ -169,6 +169,9 @@ class GdcpFile(object):
                         response = execute_upload_request(request)
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError, 
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
+                        # Don't forget that any exceptions caught here should have
+                        # been dealt with in backoff decorators for execute_upload_request
+                        # too
                         self._fail_upload()
                         break
                 if not self.fail_upload_flag:
@@ -189,6 +192,10 @@ class GdcpFile(object):
                             log.info("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
+                        # Don't forget that any exceptions caught here should have
+                        # been dealt with in backoff decorators for execute_upload_request
+                        # too
+
                         # Chunk upload threw an error, retry or restart
 
                         # Create sensible error string
@@ -287,6 +294,9 @@ class GdcpFile(object):
                         response, content = execute_download_request(self.drive.auth.service._http,
                             self.downloadUrl, bytes_start, bytes_end)
                     except httplib.IncompleteRead as e:
+                        # Don't forget that any exceptions caught here should have
+                        # been dealt with in backoff decorators for execute_download_request
+                        # too
                         self._fail_download()
                         fh.close()
                         os.remove(self.path)
@@ -727,6 +737,8 @@ def do_setup(location=CONFIG_DIR):
 def execute_request(request):
     return request.execute()
 
+# Don't forget that any exceptions handled here should also be dealt
+# with in except where this function is used in case all retries fail
 @backoff.on_exception(backoff.expo, apiclient.errors.HttpError, max_tries=6)
 @backoff.on_exception(backoff.expo, KeyError, max_tries=6)
 @backoff.on_exception(backoff.expo, ssl.SSLError, max_tries=6)
@@ -734,7 +746,6 @@ def execute_request(request):
 @backoff.on_exception(backoff.expo, httplib2.HttpLib2Error, max_tries=6)
 @backoff.on_exception(backoff.expo, socket.error, max_tries=6)
 def execute_upload_request(request):
-    raise KeyError
     return request.execute()
 
 def response_is_bad(response):
@@ -746,6 +757,8 @@ def response_is_bad(response):
     """
     return not (response[0].status in [206, 200])
 
+# Don't forget that any exceptions handled here should also be dealt
+# with in except where this function is used in case all retries fail
 @backoff.on_exception(backoff.expo, httplib.IncompleteRead, max_tries=6)
 @backoff.on_predicate(backoff.expo, response_is_bad, max_tries=6)
 def execute_download_request(h, url, bytes_start, bytes_end):
