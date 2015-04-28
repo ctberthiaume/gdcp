@@ -9,7 +9,7 @@ import re
 import subprocess
 import datetime
 import time
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, FileType
 import random
 import mimetypes
 import httplib
@@ -186,7 +186,7 @@ class GdcpFile(object):
                             # Keep track of progress
                             prev_bytes_sent = self.bytes_sent
                             self._register_upload_chunk(status, t1)
-                            log.debug("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
+                            log.info("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
                         # Chunk upload threw an error, retry or restart
@@ -298,7 +298,7 @@ class GdcpFile(object):
                         break
                     else:
                         fh.write(content)
-                        log.debug("Downloaded bytes %i-%i with status %s" %
+                        log.info("Downloaded bytes %i-%i with status %s" %
                             (bytes_start, bytes_end, response.status))
                         self.bytes_received += bytes_end - bytes_start + 1
                         self._register_download_chunk(t1, bytes_end - bytes_start + 1)
@@ -616,7 +616,6 @@ class GdcpFile(object):
 
 
 def main():
-    configure_logging()
     configure_signals()
     do_setup()
     cli()
@@ -624,43 +623,40 @@ def main():
 # -----------------------------------------------------------------------------
 # Configuration functions
 # -----------------------------------------------------------------------------
-def configure_logging():
+def configure_logging(stream=None, verbose=False):
     """
     Configure logging handlers
     """
+    if stream is None:
+        handler = logging.NullHandler()
+    else:
+        handler = logging.StreamHandler(stream=stream)
     fmt = "%(asctime)-25s %(levelname)-10s %(name)-26s: %(message)s"
     datefmt = "%m/%d/%Y %I:%M:%S %p"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
-
+    handler.setFormatter(formatter)
+    
     # Logger instances have been created globally
-    google_handler = logging.StreamHandler()
-    google_handler.setFormatter(formatter)
-    googleapi.addHandler(google_handler)
-    oauth2_client.addHandler(google_handler)
-    oauth2_util.addHandler(google_handler)
+    googleapi.addHandler(handler)
+    oauth2_client.addHandler(handler)
+    oauth2_util.addHandler(handler)
     googleapi.setLevel(logging.WARNING)
     oauth2_client.setLevel(logging.WARNING)
     # oauth2_util is spitting out warnings like this
     # new_request() takes at most 1 positional argument (6 given)
     # set to error here to ignore
     oauth2_util.setLevel(logging.ERROR)
-    backoff_handler = logging.StreamHandler()
-    backoff_handler.setFormatter(formatter)
-    backoff_log.addHandler(backoff_handler)
+    backoff_log.addHandler(handler)
     backoff_log.setLevel(logging.WARNING)
-
-    main_handler = logging.StreamHandler()
-    main_handler.setFormatter(formatter)
-    log.addHandler(main_handler)
+    log.addHandler(handler)
     log.setLevel(logging.INFO)
-    #log.setLevel(logging.CRITICAL)
 
-def verbose():
-    googleapi.setLevel(logging.INFO)
-    oauth2_client.setLevel(logging.INFO)
-    oauth2_util.setLevel(logging.INFO)
-    backoff_log.setLevel(logging.INFO)
-    log.setLevel(logging.DEBUG)
+    if verbose:
+        googleapi.setLevel(logging.INFO)
+        oauth2_client.setLevel(logging.INFO)
+        oauth2_util.setLevel(logging.INFO)
+        backoff_log.setLevel(logging.INFO)
+        log.setLevel(logging.DEBUG)
 
 def configure_signals():
     """
@@ -948,6 +944,17 @@ def cli():
     """
     Parse command-line options.
     """
+    parent = ArgumentParser(add_help=False)
+    parent.add_argument(
+        "-l", "--log",
+        type=FileType('w'),
+        help="""Log file location. Default is no detailed logging.""")
+    parent.add_argument(
+        "--verbose",
+        default=False,
+        action="store_true",
+        help="Verbose logging output")
+
     parser = ArgumentParser(
         description="Google Drive command-line interface",
         formatter_class=ArgumentDefaultsHelpFormatter)
@@ -960,18 +967,15 @@ def cli():
     parser_version = subparsers.add_parser(
         "version", 
         help="Print the semantic version number",
-        formatter_class=ArgumentDefaultsHelpFormatter)
+        parents=[parent])
     parser_version.set_defaults(func=cli_version)
 
     # List
     parser_list = subparsers.add_parser(
         "list", 
         help="List files in Google Drive. Trashed files are listed.",
-        formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_list.add_argument("--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
     parser_list.add_argument(
         "-m", "--metadata",
         default="title,fileSize,id,md5Checksum",
@@ -1004,12 +1008,8 @@ def cli():
     parser_download = subparsers.add_parser(
         "download", 
         help="Download files from Google Drive",
-        formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_download.add_argument(
-        "--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
     parser_download.add_argument(
         "-i", "--id",
         default=[],
@@ -1046,12 +1046,8 @@ def cli():
     parser_upload = subparsers.add_parser(
         "upload", 
         help="Upload files to Google Drive",
-        formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_upload.add_argument(
-        "--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
     parser_upload.add_argument(
         "-p", "--parent",
         default="root",
@@ -1095,12 +1091,8 @@ def cli():
         "transfer", 
         help="""Transfer ownership of files or folders to a different account
         within the same domain""",
-        formatter_class=ArgumentDefaultsHelpFormatter)
-    parser_transfer.add_argument(
-        "--verbose",
-        default=False,
-        action="store_true",
-        help="Verbose logging output")
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
     parser_transfer.add_argument(
         "-i", "--id",
         default=[],
@@ -1115,8 +1107,7 @@ def cli():
     args = parser.parse_args()
     if args.subcommand_name != "version":
         args.drive = create_GoogleDrive()  # add GoogleDrive
-        if args.verbose:
-            verbose()
+        configure_logging(args.log, args.verbose)
     args.func(args)
 
 def cli_list(args):
