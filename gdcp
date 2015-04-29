@@ -16,6 +16,7 @@ import httplib
 import httplib2
 import socket
 import ssl
+import json
 import apiclient.errors
 import apiclient.http
 import oauth2client.client
@@ -23,10 +24,10 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import backoff
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 PROJ = "gdcp"  # name of this project
 CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
-CHUNKSIZE = 2 ** 20 * 250  # 250 MiB chunks
+CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
@@ -78,17 +79,17 @@ class Gdcp(object):
             f = GdcpFile(self, gid=_id, checksum=checksum, root=root)
             f.download()
 
-    def list(self, ids=[], metadata=[], depth=0):
+    def list(self, ids=[], json_flag=False, depth=0):
         for _id in ids:
             f = GdcpFile(self, gid=_id)
-            f.list(metadata=metadata, depth=depth)
+            f.list(json_flag=json_flag, depth=depth)
 
     def transfer_ownership(self, ids, email, permId=None):
         for _id in ids:
             f = GdcpFile(self, gid=_id)
             f.transfer_ownership(email, root=True)
 
-    def list_all_files(self, metadata=[]):
+    def list_all_files(self, json_flag=False):
         """
         Print metadata for all files in Google Drive
         """
@@ -96,10 +97,10 @@ class Gdcp(object):
         log.debug("query = '%s'" % query)
         request = self.drive.auth.service.files().list(q=query, maxResults=460)
         while request != None:
-            response = excute_request(request)
+            response = execute_request(request)
             for i in response["items"]:
                 g = GdcpFile(self, metadata=i)
-                g.print_metadata(metadata)
+                g.print_file(json_flag=json_flag)
             request = self.drive.auth.service.files().list_next(request, response)
 
 class GdcpFile(object):
@@ -122,7 +123,8 @@ class GdcpFile(object):
         if self.title is None:
             self.title = title_from_path(self.path)
 
-        self._metadata = metadata
+        self._metadata = None
+        self.metadata = metadata
 
         self.retry_limit = 6
         self.prev_progress = 0.00
@@ -160,7 +162,8 @@ class GdcpFile(object):
             complete_retries = 0
             response = None
 
-            stdout("%s %.02f%% (%.02fMB/s)" % (self.title, 0.00, 0.00))
+            stdoutn("%s" % self.path)
+            stdout("  0.00% 0 0.00MB/s 0s")
             if self.fileSize == 0:
                 # zero size files don't do resumable chunked uploads
                 request = self.drive.auth.service.files().insert(body=body)
@@ -174,8 +177,6 @@ class GdcpFile(object):
                         # too
                         self._fail_upload()
                         break
-                if not self.fail_upload_flag:
-                    stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, 100.00, 0.00))
             else:
                 # File is not empty, do resumable chunked upload
                 request = self.drive.auth.service.files().insert(body=body, media_body=media_body)
@@ -188,8 +189,14 @@ class GdcpFile(object):
                             # Successfully sent a chunk, but download not complete yet
                             # Keep track of progress
                             prev_bytes_sent = self.bytes_sent
-                            self._register_upload_chunk(status, t1)
-                            log.info("Uploaded bytes %i-%i" % (prev_bytes_sent + 1, self.bytes_sent))
+                            self.bytes_sent = min(self.bytes_sent + CHUNKSIZE, self.fileSize)
+                            cur_progress = status.progress() * 100
+                            t_tmp = datetime.datetime.now()
+                            rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
+                            log.info("Uploaded bytes %i-%i %.02f%% %.02fMB/s" % 
+                                (prev_bytes_sent + 1, self.bytes_sent, cur_progress, rate))
+                            stdoutr("  %.02f%% %i %.02fMB/s %s" % 
+                                (cur_progress, self.bytes_sent, rate, format_timedelta(t0, t_tmp)))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
                         # Don't forget that any exceptions caught here should have
@@ -235,17 +242,16 @@ class GdcpFile(object):
             if response:
                 t2 = datetime.datetime.now()
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
-                stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, 100.00, rate))
-                log.info("Uploaded 100.00%%.  %i bytes in %s (%.02fMB/s) %s" %
+                stdoutr("  %.02f%% %i %.02fMB/s %s" % 
+                    (100.00, self.fileSize, rate, format_timedelta(t0, t2)))
+                log.info("Uploaded 100.00%%.  %i bytes in %s %.02fMB/s %s" %
                     (self.fileSize, format_timedelta(t0, t2), rate, self.id))
-                stdoutn()
                 if self.check_checksum:
                     self._check_md5()
-            else:
-                stdoutn()
+            stdoutn()
             if self.fail_upload_flag or self.fail_md5_flag:
                 log.warning("Upload failed for %s" % self.path)
-                stdoutn("%s upload failed" % self.path)
+                stdoutn("  Upload failed")
             else:
                 self.gdcp.files.append(self)  # Add this file to Gdcp object
 
@@ -259,6 +265,10 @@ class GdcpFile(object):
 
         # Check for match against any exclude rules
         if not self._passes_excludes():
+            return
+
+        # Skip Google Apps Docs
+        if self._is_google_apps_doc():
             return
 
         if not os.path.exists(self.root):
@@ -277,7 +287,8 @@ class GdcpFile(object):
                 f.download()
         else:
             # File
-            stdout("%s %.02f%% (%.02fMB/s)" % (self.title, 0.00, 0.00))
+            stdoutn(self.path)
+            stdout("  0.00% 0 0.00MB/s 0s")
             log.info("Downloading %s, size = %i, md5 = %s, id = %s" % 
                 (self.path, self.fileSize, self.google_md5Checksum, self.id))
 
@@ -308,30 +319,44 @@ class GdcpFile(object):
                         break
                     else:
                         fh.write(content)
-                        log.info("Downloaded bytes %i-%i with status %s" %
-                            (bytes_start, bytes_end, response.status))
                         self.bytes_received += bytes_end - bytes_start + 1
-                        self._register_download_chunk(t1, bytes_end - bytes_start + 1)
+                        bytes_this_chunk = bytes_end - bytes_start + 1
+                        try:
+                            cur_progress = float(self.bytes_received) / self.fileSize * 100
+                        except ZeroDivisionError:
+                            cur_progress = 100.00
+                        t_tmp = datetime.datetime.now()
+                        rate = calc_transfer_rate(t1, t_tmp, bytes_this_chunk)
+                        log.info("Downloaded bytes %i-%i with status %s %.02f%% %.02fMB/s" %
+                            (bytes_start, bytes_end, response.status, cur_progress, rate))
+                        stdoutr("  %.02f%% %i %.02fMB/s %s" %
+                            (cur_progress, self.bytes_received, rate, format_timedelta(t0, t_tmp)))
                         bytes_start = bytes_end + 1
                         bytes_end = min(max(self.fileSize - 1, 0), bytes_start + CHUNKSIZE - 1)
 
-            stdoutn()
             t2 = datetime.datetime.now()
-
+            rate = calc_transfer_rate(t0, t2, self.bytes_received)
+            try:
+                cur_progress = float(self.bytes_received) / self.fileSize * 100
+            except ZeroDivisionError:
+                cur_progress = 100.00
             if not self.fail_download_flag:
+                stdoutr("  %.02f%% %i %.02fMB/s %s" %
+                    (cur_progress, self.bytes_received, rate, format_timedelta(t0, t2)))
                 if self.check_checksum:
                     if self.check_checksum:
                         self._check_md5()
+            stdoutn()
             if self.fail_download_flag or self.fail_md5_flag:
                 log.warning("Download failed for %s" % self.path)
-                stdoutn("%s download failed" % self.path)
+                stdoutn("  Download failed" % self.path)
             else:
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
-                log.info("Downloaded 100.00%%.  %i bytes in %s (%.02fMB/s)" %
-                 (self.fileSize, format_timedelta(t0, t2), rate))
+                log.info("Downloaded %.02f%% .  %i bytes in %s %.02fMB/s" %
+                    (cur_progress, self.bytes_received, format_timedelta(t0, t2), rate))
                 self.gdcp.files.append(self)  # Add this file to Gdcp object
 
-    def list(self, metadata, depth=0, indent=""):
+    def list(self, json_flag=False, depth=0, predecessors=""):
         """
         Print file listings starting at and including self.
 
@@ -341,32 +366,44 @@ class GdcpFile(object):
         child with depth - 1.
         """
         if depth >= 0:
-            self.print_metadata(metadata, indent)
+            self.print_file(json_flag, predecessors)
             if self._is_folder():
                 children = self._get_children()
                 for c in children:
-                    c.list(metadata, depth-1, indent=indent + "  ")
+                    if not predecessors:
+                        new_pre = self.title
+                    else:
+                        new_pre = predecessors + "/" + self.title
+                    c.list(json_flag, depth-1, new_pre)
         elif depth == -1:
-            self.print_metadata(metadata, indent)
+            self.print_file(json_flag, predecessors)
 
-    def print_metadata(self, metadata, indent=""):
+    def print_file(self, json_flag=False, predecessors=""):
         """
         Print metadata for this file
         """
         self._ensure_google_file_metadata()
-        line = []
-        for prop in metadata:
-            try:
-                line.append("%s: %s" % (prop, remove_r_n(self.metadata[prop])))
-            except KeyError:
-                # Some files don't have common properties
-                # e.g. folders don't have a fileSize
-                # We don't want to throw an error for these cases
-                # error("Invalid metadata property " +
-                #       "'%s' in -m string '%s' " % (meta, metadata) +
-                #       "for file %s" % afile['title'])
-                pass
-        print indent + "\t".join(line)
+        if json_flag:
+            print json.dumps(self.metadata)
+        else:
+            line = []
+            if predecessors:
+                title = predecessors + "/" + remove_r_n(self.metadata["title"])
+            else:
+                title = remove_r_n(self.metadata["title"])
+            line.append(title)
+            line.append(self.metadata["id"])
+            if self._is_folder():
+                file_type = "folder"
+            elif self._is_google_apps_doc():
+                file_type = "doc"
+            else:
+                file_type = "file"
+            line.append(file_type)
+            if not (self._is_folder() or self._is_google_apps_doc()):
+                line.append(self.metadata["fileSize"])
+                line.append(self.metadata["md5Checksum"])
+            print "\t".join(line)
 
     def transfer_ownership(self, email, root=True):
         """
@@ -415,7 +452,7 @@ class GdcpFile(object):
                 transferOwnership=True)
             owner_resp = execute_request(request)
         self.gdcp.files.append(self)  # Add this file to Gdcp object
-        stdoutn("%s transferred" % self.title)
+        stdoutn("%s %s" % (self.title, self.id))
         log.info("Transferred ownership of %s" % self.title)
 
         if self._is_folder():
@@ -483,10 +520,15 @@ class GdcpFile(object):
         response = execute_request(request)
         # Sometimes folders take a while to become available. Try to get metadata
         # from Google to make sure it's available before moving on
-        request = self.drive.auth.service.files().get(fileId=response["id"])
-        response = execute_request(request)
+        # Skipping here for now, hopefully retries in API calls that use this
+        # folder as a parent will be sufficient to hide errors
+        #request = self.drive.auth.service.files().get(fileId=response["id"])
+        #response = execute_request(request)
         self.metadata = response
-        stdoutn("%s created" % self.title)
+        path = self.path if self.path else self.title
+        if not path.endswith("/"):
+            path += "/"
+        stdoutn("%s" % path)
         log.info("Created folder %s %s" % (self.title, self.id))
 
     def _create_local_folder(self, path=None):
@@ -507,11 +549,17 @@ class GdcpFile(object):
             log.info("Created folder %s" % folder_path)
         else:
             log.info("Created folder %s %s" % (folder_path, self.id))
+        if not folder_path.endswith("/"):
+            folder_path += "/"
         stdoutn("%s" % folder_path)
 
     def _is_folder(self):
         self._ensure_google_file_metadata()
         return self.mimetype == "application/vnd.google-apps.folder"
+
+    def _is_google_apps_doc(self):
+        self._ensure_google_file_metadata()
+        return self.mimetype == "application/vnd.google-apps.document"
 
     def _create_media_body(self):
         return apiclient.http.MediaFileUpload(self.path,
@@ -527,48 +575,12 @@ class GdcpFile(object):
             body["parents"] = [{"id": self.parent}]
         return body
 
-    def _register_download_chunk(self, t1, bytes_this_chunk):
-        """
-        Track progress through download
-        """
-        try:
-            cur_progress = float(self.bytes_received) / self.fileSize * 100
-        except ZeroDivisionError:
-            cur_progress = 100.00
-
-        t_tmp = datetime.datetime.now()
-        rate = calc_transfer_rate(t1, t_tmp, bytes_this_chunk)
-
-        # Only print progress every 5% or greater
-        if cur_progress - self.prev_progress > 5.0 and cur_progress < 100.00:
-            log.info("Downloaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
-            self.prev_progress = cur_progress
-        
-        stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, cur_progress, rate))
-
-    def _register_upload_chunk(self, status, t1):
-        """
-        Track progress through upload
-        """
-        cur_progress = status.progress() * 100
-        self.bytes_sent = min(self.bytes_sent + CHUNKSIZE, self.fileSize)
-
-        # Only print progress every 5% or greater
-        diff_progress = cur_progress - self.prev_progress
-        t_tmp = datetime.datetime.now()
-        rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
-        if diff_progress > 5.0 and cur_progress < 100.00:
-            log.info("Uploaded %.02f%% (%.02fMB/s)" % (cur_progress, rate))
-            self.prev_progress = cur_progress
-
-        stdoutr("%s %.02f%% (%.02fMB/s)" % (self.title, cur_progress, rate))
-
     def _check_md5(self):
         """
         Confirm that response MD5 from Google matches MD5 for local
         file
         """
-        stdout("%s MD5 ..." % self.title)
+        stdout(" MD5...")
         log.info("Calculating MD5 checksum for %s" % self.path)
         try:
             output = subprocess.check_output(["openssl", "md5", self.path],
@@ -578,14 +590,12 @@ class GdcpFile(object):
                   output.rstrip())
         self.local_md5Checksum = output.split()[-1]
         if self.local_md5Checksum == self.google_md5Checksum:
-            stdoutr("%s MD5 ... OK" % self.title)
-            stdoutn()
+            stdout("OK")
             log.info("MD5 OK.  %s (local) == %s" %
                      (self.local_md5Checksum, self.google_md5Checksum))
             return True
         else:
-            stdoutr("%s MD5 ... FAIL" % self.title)
-            stdoutn()
+            stdout("FAIL")
             log.warning("MD5 failed.  %s (local) != %s" %
                         (self.local_md5Checksum, self.google_md5Checksum))
             self._fail_md5()
@@ -657,7 +667,7 @@ def configure_logging(stream=None, verbose=False):
     # set to error here to ignore
     oauth2_util.setLevel(logging.ERROR)
     backoff_log.addHandler(handler)
-    backoff_log.setLevel(logging.WARNING)
+    backoff_log.setLevel(logging.INFO)
     log.addHandler(handler)
     log.setLevel(logging.INFO)
 
@@ -665,7 +675,6 @@ def configure_logging(stream=None, verbose=False):
         googleapi.setLevel(logging.INFO)
         oauth2_client.setLevel(logging.INFO)
         oauth2_util.setLevel(logging.INFO)
-        backoff_log.setLevel(logging.INFO)
         log.setLevel(logging.DEBUG)
 
 def configure_signals():
@@ -755,7 +764,10 @@ def response_is_bad(response):
     response is return value from httplib2.http.request GET call, which
     is a two-item list of [response, content]
     """
-    return not (response[0].status in [206, 200])
+    bad = not (int(response[0].status) in [206, 200])
+    if bad:
+        log.warning("Bad status %s" % response[0].status)
+    return bad
 
 # Don't forget that any exceptions handled here should also be dealt
 # with in except where this function is used in case all retries fail
@@ -866,26 +878,27 @@ def format_timedelta(t1, t2):
     delta = t2 - t1
     delta_s = delta.total_seconds()
     elapse = []
+    days = int(delta_s / (24 * 60 * 60))
 
-    days = delta_s / (24 * 60 * 60)
-    if int(days) > 0:
-        elapse.append("%id" % int(days))
+    if days > 0:
+        elapse.append("%id" % days)
         delta_s -= days * 24 * 60 * 60
 
-    hours = delta_s / (60 * 60)
-    if int(hours):
-        elapse.append("%ih" % int(hours))
+    hours = int(delta_s / (60 * 60))
+    if hours:
+        elapse.append("%ih" % hours)
         delta_s -= hours * 60 * 60
 
-    minutes = delta_s / 60
-    if int(minutes):
-        elapse.append("%im" % int(minutes))
+    minutes = int(delta_s / 60)
+    if minutes:
+        elapse.append("%im" % minutes)
         delta_s -= minutes * 60
 
     seconds = delta_s
     elapse.append("%.02fs" % seconds)
 
     return "".join(elapse)
+
 
 def calc_transfer_rate(t1, t2, file_size):
     """
@@ -990,11 +1003,10 @@ def cli():
         formatter_class=ArgumentDefaultsHelpFormatter,
         parents=[parent])
     parser_list.add_argument(
-        "-m", "--metadata",
-        default="title,fileSize,id,md5Checksum",
-        help="""Comma separated list of metadata keys to display.
-             See
-             https://developers.google.com/drive/v2/reference/files#resource""")
+        "-j", "--json",
+        default=False,
+        action="store_true",
+        help="""Print JSON data structure for each file""")
     parser_list.add_argument(
         "-d", "--depth",
         default=0,
@@ -1124,17 +1136,16 @@ def cli():
     args.func(args)
 
 def cli_list(args):
-    metadata_list = args.metadata.split(",")
     ids = parse_id_args(args.id)
     gdcp = Gdcp(args.drive)
     if args.depth < 0:
         error("list -d must be >= 0")
     if args.all:  # start at root
-        gdcp.list_all_files(metadata_list)
+        gdcp.list_all_files(json_flag=args.json)
     else:
         if len(ids) == 0:
             ids.append("root")
-        gdcp.list(ids=ids, metadata=metadata_list, depth=args.depth)
+        gdcp.list(ids=ids, json_flag=args.json, depth=args.depth)
 
 def cli_download(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
@@ -1145,8 +1156,8 @@ def cli_download(args):
         gdcp.print_failed()
         sys.exit(1)
     else:
-        stdoutn("Downloaded %i files and folders" % len(gdcp.files))
-        log.info("Downloaded %i files and folders" % len(gdcp.files))
+        stdoutn("Downloaded %i file(s) and folder(s)" % len(gdcp.files))
+        log.info("Downloaded %i file(s) and folder(s)" % len(gdcp.files))
 
 def cli_upload(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
@@ -1160,15 +1171,15 @@ def cli_upload(args):
         gdcp.print_failed()
         sys.exit(1)
     else:
-        stdoutn("Uploaded %i files and folders" % len(gdcp.files))
-        log.info("Uploaded %i files and folders" % len(gdcp.files))
+        stdoutn("Uploaded %i file(s) and folder(s)" % len(gdcp.files))
+        log.info("Uploaded %i file(s) and folder(s)" % len(gdcp.files))
 
 def cli_transfer_ownership(args):
     gdcp = Gdcp(args.drive)
     ids = parse_id_args(args.id)
     gdcp.transfer_ownership(ids, args.email)
-    log.info("Transferred ownership for %i files" % len(gdcp.files))
-    stdoutn("Transferred ownership for %i files" % len(gdcp.files))
+    log.info("Transferred ownership for %i file(s)" % len(gdcp.files))
+    stdoutn("Transferred ownership for %i file(s)" % len(gdcp.files))
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
