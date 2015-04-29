@@ -452,7 +452,7 @@ class GdcpFile(object):
                 transferOwnership=True)
             owner_resp = execute_request(request)
         self.gdcp.files.append(self)  # Add this file to Gdcp object
-        stdoutn("%s %s" % (self.title, self.id))
+        stdoutn("%s\t%s" % (self.title, self.id))
         log.info("Transferred ownership of %s" % self.title)
 
         if self._is_folder():
