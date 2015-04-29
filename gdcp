@@ -999,14 +999,16 @@ def cli():
     # List
     parser_list = subparsers.add_parser(
         "list", 
-        help="List files in Google Drive. Trashed files are listed.",
+        help="""List files in Google Drive. Columns are title, id,
+        type (file, folder, doc), fileSize, md5Checksum.  Folders and
+        docs only have first 3 columns.""",
         formatter_class=ArgumentDefaultsHelpFormatter,
         parents=[parent])
     parser_list.add_argument(
         "-j", "--json",
         default=False,
         action="store_true",
-        help="""Print JSON data structure for each file""")
+        help="""Print complete JSON data structure for each file""")
     parser_list.add_argument(
         "-d", "--depth",
         default=0,
@@ -1020,7 +1022,7 @@ def cli():
         default=False,
         action="store_true",
         help="""List all files except for trashed. Much faster than specifying
-                a -d value < 0.""")
+                a large -d value.""")
     parser_list.add_argument(
         "-i", "--id",
         default=[],
@@ -1032,7 +1034,7 @@ def cli():
     # Download
     parser_download = subparsers.add_parser(
         "download", 
-        help="Download files from Google Drive",
+        help="Download files from Google Drive. Google Docs are skipped.",
         formatter_class=ArgumentDefaultsHelpFormatter,
         parents=[parent])
     parser_download.add_argument(
