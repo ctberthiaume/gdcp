@@ -24,10 +24,17 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import backoff
 
-VERSION = "0.7.0"
+# Set these variables if you want to distribute gdcp with preset
+# Google API OAuth Client ID details. Otherwise, if these variables are
+# set to a value that evaluates to False, you will be required to provide
+# OAuth Client ID details from your own Google developer console.
+CLIENT_ID = None
+CLIENT_SECRET = None
+
+VERSION = "0.7.1"
 PROJ = "gdcp"  # name of this project
-CONFIG_DIR = os.path.join(os.environ["HOME"], "." + PROJ)
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
+
 
 log = logging.getLogger(PROJ)
 googleapi = logging.getLogger("googleapiclient.discovery")
@@ -635,11 +642,6 @@ class GdcpFile(object):
         self.gdcp.failures["HTTP"].append(self)
 
 
-def main():
-    configure_signals()
-    do_setup()
-    cli()
-
 # -----------------------------------------------------------------------------
 # Configuration functions
 # -----------------------------------------------------------------------------
@@ -687,7 +689,9 @@ def configure_signals():
     """
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-def authorize(location=CONFIG_DIR):
+def authorize(location=None):
+    if not location:
+        location = os.path.join(os.environ["HOME"], "." + PROJ)
     # Authentication
     settings_file = os.path.join(location, "settings.yaml")
     gauth = GoogleAuth(settings_file)
@@ -698,7 +702,9 @@ def authorize(location=CONFIG_DIR):
 def create_GoogleDrive():
     return GoogleDrive(authorize())
 
-def do_setup(location=CONFIG_DIR):
+def do_setup(location=None):
+    if not location:
+        location = os.path.join(os.environ["HOME"], "." + PROJ)
     settings = os.path.join(location, "settings.yaml")
     client_secrets = os.path.join(location, "client_secrets.json")
     credentials = os.path.join(location, "credentials.json")
@@ -708,6 +714,13 @@ def do_setup(location=CONFIG_DIR):
     settings_text.append("save_credentials: True")
     settings_text.append("save_credentials_backend: file")
     settings_text.append("save_credentials_file: %s" % credentials)
+    if not (CLIENT_ID and CLIENT_SECRET):
+        settings_text.append("client_config_backend: file")
+    else:
+        settings_text.append("client_config_backend: settings")
+        settings_text.append("client_config:")
+        settings_text.append("  client_id: %s" % CLIENT_ID)
+        settings_text.append("  client_secret: %s" % CLIENT_SECRET)
 
     if not os.path.exists(location):
         os.mkdir(location)
@@ -1132,9 +1145,11 @@ def cli():
     parser_transfer.set_defaults(func=cli_transfer_ownership)
 
     args = parser.parse_args()
+    configure_logging(args.log, args.verbose)
+    do_setup()
+
     if args.subcommand_name != "version":
         args.drive = create_GoogleDrive()  # add GoogleDrive
-        configure_logging(args.log, args.verbose)
     args.func(args)
 
 def cli_list(args):
@@ -1185,6 +1200,13 @@ def cli_transfer_ownership(args):
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+def main():
+    configure_signals()
+    cli()
 
 if __name__ == "__main__":
     main()
