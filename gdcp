@@ -31,7 +31,7 @@ import backoff
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -882,6 +882,7 @@ def chdir(folder_path):
 
 def error(msg):
     log.error(msg)
+    sys.stderr.write(msg + "\n")
     sys.exit(1)
 
 def format_timedelta(t1, t2):
