@@ -1145,9 +1145,12 @@ def cli():
         help="""Google Apps account email address of new owner""")
     parser_transfer.set_defaults(func=cli_transfer_ownership)
 
+    # First get rid of message about oauth2client.util not having a handler
+    oauth2_util.addHandler(logging.NullHandler())
+    do_setup()
+
     args = parser.parse_args()
     configure_logging(args.log, args.verbose)
-    do_setup()
 
     if args.subcommand_name != "version":
         args.drive = create_GoogleDrive()  # add GoogleDrive
