@@ -31,7 +31,7 @@ import backoff
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.2"
+VERSION = "0.7.3"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -933,19 +933,30 @@ def find_id(id_string):
     Valid inputs include:
     - an ID
     - part or all of the Google Drive browser URL for a folder
+      e.g. https://drive.google.com/drive/#folders/0B01234567890123456789012345
       e.g. https://drive.google.com/drive/#folders/0B01234567890123456789012345/0B01234567890123456789012346
       e.g. 987012345/0B01234567890123456789012346
     - the download link for a file or folder provided in the Google Drive
       browser interface from "Get Link" in a context menu
       e.g. https://drive.google.com/open?id=0B01234567890123456789012346&authuser=0
+    - Google Docs URL
+      e.g. https://docs.google.com/a/uw.edu/file/d/0B1vFU7eD_alGaXRiMk1qa1J6UzQ/edit?usp=drivesdk
     """
     if id_string is None:
         return None
-    get_link = re.compile("^https://drive.google.com/open\?id=([^&]+)&.*$")
-    address_bar = re.compile("^.*/([^/]+)$")
-    match = get_link.match(id_string)
-    if not match:
-        match = address_bar.match(id_string)
+    res = [
+        re.compile("^([^/]+)$"), # only ID
+        re.compile("^https://drive.google.com/open\?id=([^&]+)&.*$"), # URL from "Get Link" in context menu
+        re.compile("^https://drive.google.com/drive/#folders/.*/([^/]+)$"), # Google Drive address bar URL for nested folder
+        re.compile("^https://drive.google.com/drive/#folders/([^/]+)$"), # Google Drive address bar URL for one folder
+        re.compile("^https://docs.google.com/.*/([^/]+)/[^/]+$"), # Google Docs address bar URL
+        re.compile("^.*/([^/]+)") # final catch for part of nested folder URL 987012345/0B01234567890123456789012346
+    ]
+    match = None
+    i = 0
+    while match is None and i < len(res):
+        match = res[i].match(id_string)
+        i += 1
     if match:
         id_string = match.groups()[0]
     return id_string
