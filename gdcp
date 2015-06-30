@@ -177,7 +177,7 @@ class GdcpFile(object):
                 while response is None:
                     try:
                         response = execute_upload_request(request)
-                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError, 
+                    except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
                         # Don't forget that any exceptions caught here should have
                         # been dealt with in backoff decorators for execute_upload_request
@@ -200,9 +200,9 @@ class GdcpFile(object):
                             cur_progress = status.progress() * 100
                             t_tmp = datetime.datetime.now()
                             rate = calc_transfer_rate(t1, t_tmp, CHUNKSIZE)
-                            log.info("Uploaded bytes %i-%i %.02f%% %.02fMB/s" % 
+                            log.info("Uploaded bytes %i-%i %.02f%% %.02fMB/s" %
                                 (prev_bytes_sent + 1, self.bytes_sent, cur_progress, rate))
-                            stdoutr("  %.02f%% %i %.02fMB/s %s" % 
+                            stdoutr("  %.02f%% %i %.02fMB/s %s" %
                                 (cur_progress, self.bytes_sent, rate, format_timedelta(t0, t_tmp)))
                     except (apiclient.errors.HttpError, KeyError, ssl.SSLError,
                             httplib2.HttpLib2Error, httplib.BadStatusLine, socket.error) as e:
@@ -249,7 +249,7 @@ class GdcpFile(object):
             if response:
                 t2 = datetime.datetime.now()
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
-                stdoutr("  %.02f%% %i %.02fMB/s %s" % 
+                stdoutr("  %.02f%% %i %.02fMB/s %s" %
                     (100.00, self.fileSize, rate, format_timedelta(t0, t2)))
                 log.info("Uploaded 100.00%%.  %i bytes in %s %.02fMB/s %s" %
                     (self.fileSize, format_timedelta(t0, t2), rate, self.id))
@@ -296,7 +296,7 @@ class GdcpFile(object):
             # File
             stdoutn(self.path)
             stdout("  0.00% 0 0.00MB/s 0s")
-            log.info("Downloading %s, size = %i, md5 = %s, id = %s" % 
+            log.info("Downloading %s, size = %i, md5 = %s, id = %s" %
                 (self.path, self.fileSize, self.google_md5Checksum, self.id))
 
             t0 = datetime.datetime.now()
@@ -307,7 +307,7 @@ class GdcpFile(object):
             with open(self.path, "wb") as fh:
                 while self.bytes_received < self.fileSize:
                     t1 = datetime.datetime.now()
-                    
+
                     try:
                         response, content = execute_download_request(self.drive.auth.service._http,
                             self.downloadUrl, bytes_start, bytes_end)
@@ -657,7 +657,7 @@ def configure_logging(stream=None, verbose=False):
     datefmt = "%m/%d/%Y %I:%M:%S %p"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
     handler.setFormatter(formatter)
-    
+
     # Logger instances have been created globally
     googleapi.addHandler(handler)
     oauth2_client.addHandler(handler)
@@ -855,7 +855,7 @@ def de_duplicate_path_name(old_path):
     """
     if not os.path.exists(old_path):
         return old_path
-        
+
     delimiter = "_duplicate_"
     old_path = os.path.normpath(old_path)
     head, tail = os.path.split(old_path)
@@ -868,10 +868,10 @@ def de_duplicate_path_name(old_path):
         new_tail = tail + delimiter + '1'
 
     new_path = os.path.join(head, new_tail)
-   
+
     if os.path.exists(new_path):
         new_path = de_duplicate_path_name(new_path)
-    
+
     return new_path
 
 def chdir(folder_path):
@@ -939,18 +939,19 @@ def find_id(id_string):
     - the download link for a file or folder provided in the Google Drive
       browser interface from "Get Link" in a context menu
       e.g. https://drive.google.com/open?id=0B01234567890123456789012346&authuser=0
+      e.g. https://drive.google.com/open?id=0B01234567890123456789012346
     - Google Docs URL
       e.g. https://docs.google.com/a/uw.edu/file/d/0B1vFU7eD_alGaXRiMk1qa1J6UzQ/edit?usp=drivesdk
     """
     if id_string is None:
         return None
     res = [
-        re.compile("^([^/]+)$"), # only ID
-        re.compile("^https://drive.google.com/open\?id=([^&]+)&.*$"), # URL from "Get Link" in context menu
-        re.compile("^https://drive.google.com/drive/#folders/.*/([^/]+)$"), # Google Drive address bar URL for nested folder
-        re.compile("^https://drive.google.com/drive/#folders/([^/]+)$"), # Google Drive address bar URL for one folder
-        re.compile("^https://docs.google.com/.*/([^/]+)/[^/]+$"), # Google Docs address bar URL
-        re.compile("^.*/([^/]+)") # final catch for part of nested folder URL 987012345/0B01234567890123456789012346
+        re.compile(r"^([^/]+)$"), # only ID
+        re.compile(r"^https://drive\.google\.com/open\?id=([^&]+).*$"), # URL from "Get Link" in context menu
+        re.compile(r"^https://drive\.google\.com/drive/#folders/.*/([^/]+)$"), # Google Drive address bar URL for nested folder
+        re.compile(r"^https://drive\.google\.com/drive/#folders/([^/]+)$"), # Google Drive address bar URL for one folder
+        re.compile(r"^https://docs\.google\.com/.*/([^/]+)/[^/]+$"), # Google Docs address bar URL
+        re.compile(r"^.*/([^/]+)") # final catch for part of nested folder URL 987012345/0B01234567890123456789012346
     ]
     match = None
     i = 0
@@ -1016,14 +1017,14 @@ def cli():
 
     # Version
     parser_version = subparsers.add_parser(
-        "version", 
+        "version",
         help="Print the semantic version number",
         parents=[parent])
     parser_version.set_defaults(func=cli_version)
 
     # List
     parser_list = subparsers.add_parser(
-        "list", 
+        "list",
         help="""List files in Google Drive. Columns are title, id,
         type (file, folder, doc), fileSize, md5Checksum.  Folders and
         docs only have first 3 columns.""",
@@ -1058,7 +1059,7 @@ def cli():
 
     # Download
     parser_download = subparsers.add_parser(
-        "download", 
+        "download",
         help="Download files from Google Drive. Google Docs are skipped.",
         formatter_class=ArgumentDefaultsHelpFormatter,
         parents=[parent])
@@ -1096,7 +1097,7 @@ def cli():
 
     # Upload
     parser_upload = subparsers.add_parser(
-        "upload", 
+        "upload",
         help="Upload files to Google Drive",
         formatter_class=ArgumentDefaultsHelpFormatter,
         parents=[parent])
@@ -1140,7 +1141,7 @@ def cli():
 
     # Transfer ownership
     parser_transfer = subparsers.add_parser(
-        "transfer", 
+        "transfer",
         help="""Transfer ownership of files or folders to a different account
         within the same domain""",
         formatter_class=ArgumentDefaultsHelpFormatter,

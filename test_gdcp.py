@@ -12,12 +12,14 @@ class GDCPTest(unittest.TestCase):
             "https://drive.google.com/drive/#folders/0B01234567890123456789012345/0B01234567890123456789012346",
             "987012345/0B01234567890123456789012346",
             "https://drive.google.com/open?id=0B01234567890123456789012346&authuser=0",
+            "https://drive.google.com/open?id=0B01234567890123456789012346",
             "https://docs.google.com/a/uw.edu/file/d/0B1vFU7eD_alGaXRiMk1qa1J6UzQ/edit?usp=drivesdk",
             "0B1vFU7eD_alGaXRiMk1qa1J6UzQ",
             "not_an_id"
         ]
         correct_answers = [
             "0B01234567890123456789012345",
+            "0B01234567890123456789012346",
             "0B01234567890123456789012346",
             "0B01234567890123456789012346",
             "0B01234567890123456789012346",
