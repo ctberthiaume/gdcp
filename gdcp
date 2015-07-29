@@ -91,7 +91,7 @@ class Gdcp(object):
             f = GdcpFile(self, gid=_id)
             f.list(json_flag=json_flag, depth=depth)
 
-    def transfer_ownership(self, ids, email, permId=None):
+    def transfer_ownership(self, ids, email):
         for _id in ids:
             f = GdcpFile(self, gid=_id)
             f.transfer_ownership(email, root=True)
@@ -279,7 +279,7 @@ class GdcpFile(object):
             return
 
         if not os.path.exists(self.root):
-            self._create_local_folder(folder_path=self.root)
+            self._create_local_folder(path=self.root)
 
         self.path = os.path.join(self.root, self.title)
         self.path = de_duplicate_path_name(self.path)
