@@ -1,28 +1,28 @@
 #!/usr/bin/env python
 
-import os
-import sys
-import signal
-import logging
-from logging import info, warning
-import re
-import subprocess
-import datetime
-import time
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, FileType
-import random
-import mimetypes
-import httplib
-import httplib2
-import socket
-import ssl
-import json
 import apiclient.errors
 import apiclient.http
-import oauth2client.client
+from argparse import ArgumentDefaultsHelpFormatter
+from argparse import ArgumentParser
+from argparse import FileType
+import backoff
+import datetime
+import httplib
+import httplib2
+import json
+import logging
+import mimetypes
+import os
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
-import backoff
+import random
+import re
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import time
 
 # Set these variables if you want to distribute gdcp with preset
 # Google API OAuth Client ID details. Otherwise, if these variables are
@@ -43,8 +43,10 @@ oauth2_util = logging.getLogger("oauth2client.util")
 backoff_log = logging.getLogger('backoff')
 
 class Gdcp(object):
-    def __init__(self, drive, excludes=[], include=False, exclude_folders=False):
+    def __init__(self, drive, excludes=None, include=False, exclude_folders=False):
         self.drive = drive
+        if not excludes:
+            excludes = []
         self.excludes = [re.compile(e) for e in excludes]
         self.include = include
         # Should folders be considered in exclude rules?
@@ -74,19 +76,25 @@ class Gdcp(object):
             stdoutn("%i files failed MD5 verification:\n%s" %
                         (len(self.failures["MD5"]), failures))
 
-    def upload(self, paths=[], title=None, parent="root", checksum=True):
+    def upload(self, paths=None, title=None, parent="root", checksum=True):
+        if not paths:
+            paths = []
         if len(paths) > 1:
             title = None  # custom title turned off if more than one file
         for local_file in paths:
             f = GdcpFile(self, path=local_file, parent=parent, checksum=checksum, title=title)
             f.upload()
 
-    def download(self, ids=[], checksum=True, root="."):
+    def download(self, ids=None, checksum=True, root="."):
+        if not ids:
+            ids = []
         for _id in ids:
             f = GdcpFile(self, gid=_id, checksum=checksum, root=root)
             f.download()
 
-    def list(self, ids=[], json_flag=False, depth=0):
+    def list(self, ids=None, json_flag=False, depth=0):
+        if not ids:
+            ids = []
         for _id in ids:
             f = GdcpFile(self, gid=_id)
             f.list(json_flag=json_flag, depth=depth)
@@ -98,12 +106,12 @@ class Gdcp(object):
 
     def list_all_files(self, json_flag=False):
         """
-        Print metadata for all files in Google Drive
+        Print metadata for all files in Google Drive.
         """
         query = "trashed = false"
         log.debug("query = '%s'" % query)
         request = self.drive.auth.service.files().list(q=query, maxResults=460)
-        while request != None:
+        while request is not None:
             response = execute_request(request)
             for i in response["items"]:
                 g = GdcpFile(self, metadata=i)
@@ -140,6 +148,9 @@ class GdcpFile(object):
         self.fail_md5_flag = False
         self.fail_upload_flag = False
         self.fail_download_flag = False
+        self.google_md5Checksum = None
+        self.local_md5Checksum = None
+        self.downloadUrl = None
 
     def upload(self):
         """
@@ -300,7 +311,6 @@ class GdcpFile(object):
                 (self.path, self.fileSize, self.google_md5Checksum, self.id))
 
             t0 = datetime.datetime.now()
-            retries = 0
             bytes_start = 0
             bytes_end = min(max(self.fileSize - 1, 0), CHUNKSIZE - 1)
 
@@ -311,7 +321,7 @@ class GdcpFile(object):
                     try:
                         response, content = execute_download_request(self.drive.auth.service._http,
                             self.downloadUrl, bytes_start, bytes_end)
-                    except httplib.IncompleteRead as e:
+                    except httplib.IncompleteRead:
                         # Don't forget that any exceptions caught here should have
                         # been dealt with in backoff decorators for execute_download_request
                         # too
@@ -457,7 +467,7 @@ class GdcpFile(object):
                 permissionId=permId,
                 body=body,
                 transferOwnership=True)
-            owner_resp = execute_request(request)
+            execute_request(request)
         self.gdcp.files.append(self)  # Add this file to Gdcp object
         stdoutn("%s\t%s" % (self.title, self.id))
         log.info("Transferred ownership of %s" % self.title)
@@ -549,7 +559,7 @@ class GdcpFile(object):
 
         try:
             os.makedirs(folder_path)
-        except OSError as e:
+        except OSError:
             error("Could not create directory %s. Perhaps it already exists."
                   % folder_path)
         if path:
@@ -592,7 +602,7 @@ class GdcpFile(object):
         try:
             output = subprocess.check_output(["openssl", "md5", self.path],
                                              stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             error("MD5 calculation exited with an error: '%s'" %
                   output.rstrip())
         self.local_md5Checksum = output.split()[-1]
@@ -877,7 +887,7 @@ def de_duplicate_path_name(old_path):
 def chdir(folder_path):
     try:
         os.chdir(folder_path)
-    except OSError as e:
+    except OSError:
         error("Could not change to directory %s" % folder_path)
 
 def error(msg):
