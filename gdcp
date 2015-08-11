@@ -31,7 +31,7 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.3"
+VERSION = "0.7.4"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -985,7 +985,7 @@ def parse_id_args(id_args):
 
 def stdoutr(msg=""):
     """Rewrite current line on STDOUT with no terminating newline"""
-    sys.stdout.write("\r%s" % " " * 1024)  # wipe line
+    sys.stdout.write("\r%s" % (" " * 79))  # wipe line
     sys.stdout.write("\r%s" % msg)
     sys.stdout.flush()
 
