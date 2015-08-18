@@ -31,7 +31,7 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.4"
+VERSION = "0.7.5"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -366,7 +366,7 @@ class GdcpFile(object):
             stdoutn()
             if self.fail_download_flag or self.fail_md5_flag:
                 log.warning("Download failed for %s" % self.path)
-                stdoutn("  Download failed" % self.path)
+                stdoutn("  Download failed for %s" % self.path)
             else:
                 rate = calc_transfer_rate(t0, t2, self.fileSize)
                 log.info("Downloaded %.02f%% .  %i bytes in %s %.02fMB/s" %
