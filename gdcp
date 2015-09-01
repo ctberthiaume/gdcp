@@ -31,7 +31,7 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.5"
+VERSION = "0.7.6"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -892,7 +892,7 @@ def chdir(folder_path):
 
 def error(msg):
     log.error(msg)
-    sys.stderr.write(msg + "\n")
+    sys.stderr.write("\n" + msg + "\n")
     sys.exit(1)
 
 def format_timedelta(t1, t2):
@@ -982,6 +982,21 @@ def parse_id_args(id_args):
         else:
             id_strings.append(_id)
     return id_strings
+
+def parse_file_args(file_args):
+    files = []
+    for f in file_args:
+        if os.path.islink(f):
+            sys.stdout.write("Ignoring symbolic link: %s\n" % f)
+            log.warning("Ignoring symbolic link: %s" % f)
+        elif f == "-":
+            for line in sys.stdin:
+                line = line.rstrip()
+                if line:
+                    files.append(line)
+        else:
+            files.append(f)
+    return files
 
 def stdoutr(msg=""):
     """Rewrite current line on STDOUT with no terminating newline"""
@@ -1146,7 +1161,7 @@ def cli():
     parser_upload.add_argument(
         "files",
         nargs="+",
-        help="Files/folders to upload")
+        help="Files/folders to upload. - to read a list of IDs from STDIN.")
     parser_upload.set_defaults(func=cli_upload)
 
     # Transfer ownership
@@ -1205,10 +1220,8 @@ def cli_download(args):
 def cli_upload(args):
     gdcp = Gdcp(args.drive, excludes=args.excludes, include=args.invert_excludes,
         exclude_folders=args.exclude_folders)
-    for f in args.files:
-        if os.path.islink(f):
-            error("Uploading symbolic links not supported")
-    gdcp.upload(paths=args.files, title=args.title, parent=args.parent,
+    files = parse_file_args(args.files)
+    gdcp.upload(paths=files, title=args.title, parent=args.parent,
         checksum=not args.no_checksum)
     if gdcp.failed():
         gdcp.print_failed()
