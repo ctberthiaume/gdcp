@@ -77,7 +77,7 @@ foo 0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp	folder
 foo/bar.txt	0Bxt5Ia3JxzdHZGtabW9xTEduSkE	file	7	14758f1afd44c09b7992073ccf00b43d
 ```
 
-This prints information about that folder and its first-level contents. Tab-delimited columns are **title**, **id**, **type (file, folder, doc)**, **fileSize**, **md5Checksum**. To change the depth of the recursive metadata listing specify a `--depth` value greater than 0.
+This prints information about that folder and its first-level contents. Tab-delimited columns are **title**, **id**, **type**, **fileSize**, **md5Checksum**. Type will be **file** or **folder** for downloadable files and folders. For files created with a Google Apps app - documents, spreadsheets, maps, third-party apps, etc - the type reported will be the name parsed from the file's MIME type. For example, a Google Sheets file with MIME type `application/vnd.google-apps.spreadsheet` has type **spreadsheet**. To increase the depth of the recursive metadata listing specify a `--depth` value greater than 0.
 
 #### upload
 Recursively upload files or folders. For example, to upload a local folder into a Google Drive parent folder with ID `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp`.

@@ -31,7 +31,7 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.6"
+VERSION = "0.7.7"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 256  # 256 MiB chunks
 
@@ -139,6 +139,7 @@ class GdcpFile(object):
             self.title = title_from_path(self.path)
 
         self._metadata = None
+        self.doctype = None
         self.metadata = metadata
 
         self.retry_limit = 6
@@ -413,7 +414,7 @@ class GdcpFile(object):
             if self._is_folder():
                 file_type = "folder"
             elif self._is_google_apps_doc():
-                file_type = "doc"
+                file_type = self.doctype
             else:
                 file_type = "file"
             line.append(file_type)
@@ -497,6 +498,8 @@ class GdcpFile(object):
             self.downloadUrl = response.get("downloadUrl", None)
             self.fileSize = int(response.get("fileSize", 0))
             self.mimetype = response["mimeType"]
+            if self._is_google_apps_doc():
+                self.doctype = self._get_google_apps_doctype()
 
     def _get_children(self):
         """
@@ -576,7 +579,15 @@ class GdcpFile(object):
 
     def _is_google_apps_doc(self):
         self._ensure_google_file_metadata()
-        return self.mimetype == "application/vnd.google-apps.document"
+        if self.mimetype.startswith("application/vnd.google-apps."):
+            # Folders are special google apps docs which we consider separately
+            if not self._is_folder():
+                return True
+        return False
+
+    def _get_google_apps_doctype(self):
+        if self._is_google_apps_doc():
+            return self.mimetype.split("application/vnd.google-apps.")[-1]
 
     def _create_media_body(self):
         return apiclient.http.MediaFileUpload(self.path,
