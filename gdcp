@@ -962,7 +962,11 @@ def find_id(id_string):
       e.g. https://drive.google.com/open?id=0B01234567890123456789012346&authuser=0
       e.g. https://drive.google.com/open?id=0B01234567890123456789012346
     - Google Docs URL
-      e.g. https://docs.google.com/a/uw.edu/file/d/0B1vFU7eD_alGaXRiMk1qa1J6UzQ/edit?usp=drivesdk
+      e.g. https://docs.google.com/a/uw.edu/file/d/0B01234567890123456789012345
+      e.g. https://docs.google.com/a/uw.edu/file/d/0B01234567890123456789012345/edit?usp=drivesdk
+    - Drive API accessible URL, e.g. one provided by 3rd party tool like insync
+      e.g. https://drive.google.com/a/uw.edu/file/d/0B01234567890123456789012345
+      e.g. https://drive.google.com/a/uw.edu/file/d/0B01234567890123456789012345/view?usp=drivesdk
     """
     if id_string is None:
         return None
@@ -971,7 +975,8 @@ def find_id(id_string):
         re.compile(r"^https://drive\.google\.com/open\?id=([^&]+).*$"), # URL from "Get Link" in context menu
         re.compile(r"^https://drive\.google\.com/drive/#folders/.*/([^/]+)$"), # Google Drive address bar URL for nested folder
         re.compile(r"^https://drive\.google\.com/drive/#folders/([^/]+)$"), # Google Drive address bar URL for one folder
-        re.compile(r"^https://docs\.google\.com/.*/([^/]+)/[^/]+$"), # Google Docs address bar URL
+        re.compile(r"^https://(?:docs|drive)\.google\.com/.*/d/([^/]+)$"), # Google Docs/Drive URL
+        re.compile(r"^https://(?:docs|drive)\.google\.com/.*/d/([^/]+)/[^/]+$"), # Google Docs/Drive URL with one extra section after ID
         re.compile(r"^.*/([^/]+)") # final catch for part of nested folder URL 987012345/0B01234567890123456789012346
     ]
     match = None
