@@ -33,7 +33,7 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.9"
+VERSION = "0.7.10"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 64  # 64 MiB chunks
 
