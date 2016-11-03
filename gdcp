@@ -7,13 +7,14 @@ from argparse import ArgumentParser
 from argparse import FileType
 import backoff
 import datetime
+import gc
 import httplib
 import httplib2
 import json
 import logging
 import mimetypes
 import os
-from pydrive.auth import GoogleAuth
+from pydrive.auth import GoogleAuth, RefreshError
 from pydrive.drive import GoogleDrive
 import random
 import re
@@ -23,6 +24,7 @@ import ssl
 import subprocess
 import sys
 import time
+
 
 # Set these variables if you want to distribute gdcp with preset
 # Google API OAuth Client ID details. Otherwise, if these variables are
@@ -287,6 +289,11 @@ class GdcpFile(object):
             else:
                 self.gdcp.file_count += 1
 
+        # Do full gc because Python2.7's automatic gc still accumulates more
+        # allocated memory than I'd like. Most of the performance hit in this
+        # program is network latency so the wall time shouldn't budge
+        gc.collect()
+
     def download(self):
         """
         Recursively download a file/folder to local filesystem starting
@@ -388,6 +395,11 @@ class GdcpFile(object):
                 log.info("Downloaded %.02f%% .  %i bytes in %s %.02fMB/s" %
                     (cur_progress, self.bytes_received, format_timedelta(t0, t2), rate))
                 self.gdcp.file_count += 1
+
+        # Do full gc because Python2.7's automatic gc still accumulates more
+        # allocated memory than I'd like. Most of the performance hit in this
+        # program is network latency so the wall time shouldn't budge
+        gc.collect()
 
     def list(self, json_flag=False, depth=0, predecessors=""):
         """
@@ -492,6 +504,11 @@ class GdcpFile(object):
             children = self._get_children()
             for f in children:
                 f.transfer_ownership(email, root=False)
+
+        # Do full gc because Python2.7's automatic gc still accumulates more
+        # allocated memory than I'd like. Most of the performance hit in this
+        # program is network latency so the wall time shouldn't budge
+        gc.collect()
 
     @property
     def metadata(self):
@@ -734,21 +751,37 @@ def authorize(location=None):
         location = os.path.join(os.environ["HOME"], "." + PROJ)
     # Authentication
     settings_file = os.path.join(location, "settings.yaml")
-    gauth = GoogleAuth(settings_file)
-    gauth.CommandLineAuth()
-    gauth.Authorize()
+    credentials_file = os.path.join(location, "credentials.json")
+    tries = 2
+    while True:
+        try:
+            gauth = GoogleAuth(settings_file)
+            gauth.CommandLineAuth()
+            gauth.Authorize()
+            break
+        except RefreshError as e:
+            # Delete credentials, try to get new credentials once as last resort
+            sys.stderr.write(str(e) + "\n")
+            sys.stderr.write("Attempting to get new access token\n")
+            tries -= 1
+            if tries == 0:
+                raise
+            os.remove(credentials_file)
+
     return gauth
 
 def create_GoogleDrive():
     return GoogleDrive(authorize())
 
 def do_setup(location=None):
+    # Create file paths
     if not location:
         location = os.path.join(os.environ["HOME"], "." + PROJ)
     settings = os.path.join(location, "settings.yaml")
     client_secrets = os.path.join(location, "client_secrets.json")
     credentials = os.path.join(location, "credentials.json")
 
+    # Settings file contents
     settings_text = ["client_config_file: %s" % client_secrets]
     settings_text.append("get_refresh_token: True")
     settings_text.append("save_credentials: True")
@@ -786,9 +819,6 @@ def do_setup(location=None):
         msg.append("- Copy the secrets file to %s" % client_secrets)
         error("\n".join(msg))
 
-    # If credentials have not been obtained, do so now
-    if not os.path.exists(credentials):
-        authorize()
 
 # -----------------------------------------------------------------------------
 # Utility Functions
