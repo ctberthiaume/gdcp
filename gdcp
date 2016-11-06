@@ -24,6 +24,7 @@ import ssl
 import subprocess
 import sys
 import time
+import warnings
 
 
 # Set these variables if you want to distribute gdcp with preset
@@ -33,12 +34,13 @@ import time
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.10"
+VERSION = "0.7.11"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 64  # 64 MiB chunks
 
 
 log = logging.getLogger(PROJ)
+log.addHandler(logging.NullHandler())
 googleapi = logging.getLogger("googleapiclient.discovery")
 oauth2_client = logging.getLogger("oauth2client.client")
 oauth2_util = logging.getLogger("oauth2client.util")
@@ -755,9 +757,11 @@ def authorize(location=None):
     tries = 2
     while True:
         try:
-            gauth = GoogleAuth(settings_file)
-            gauth.CommandLineAuth()
-            gauth.Authorize()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                gauth = GoogleAuth(settings_file)
+                gauth.CommandLineAuth()
+                gauth.Authorize()
             break
         except RefreshError as e:
             # Delete credentials, try to get new credentials once as last resort
@@ -771,9 +775,11 @@ def authorize(location=None):
     return gauth
 
 def create_GoogleDrive():
-    return GoogleDrive(authorize())
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return GoogleDrive(authorize())
 
-def do_setup(location=None):
+def create_configdir(location=None):
     # Create file paths
     if not location:
         location = os.path.join(os.environ["HOME"], "." + PROJ)
@@ -1258,9 +1264,7 @@ def cli():
         help="""Google Apps account email address of new owner""")
     parser_transfer.set_defaults(func=cli_transfer_ownership)
 
-    # First get rid of message about oauth2client.util not having a handler
-    oauth2_util.addHandler(logging.NullHandler())
-    do_setup()
+    create_configdir()
 
     args = parser.parse_args()
     configure_logging(args.log, args.verbose)
