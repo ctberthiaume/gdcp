@@ -92,7 +92,7 @@ Uploaded 2 file(s) and folder(s)
 
 By default `gdcp` will compare the MD5 checksum of local files against the checksum reported by Google after upload.
 
-### download
+#### download
 Recursively download files or folders. For example, to download a Google Drive folder with ID  `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp`.
 
 ```
@@ -107,7 +107,7 @@ Downloaded 4 file(s) and folder(s)
 
 By default `gdcp` will compare the MD5 checksum of local files against the checksum reported by Google after download.
 
-### transfer
+#### transfer
 Recursively transfer ownership of files or folders to another Google Apps account. For example, to transfer folder `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp ` and all of its contents.
 
 ```
