@@ -15,7 +15,7 @@ Notable features:
 ## Installation
 `gdcp` is a python script which depends on
 
-* Python 2.7
+* Python **2.7**. **Python 3 is not supported**. If you see syntax errors about exception handling or print statements make sure `gdcp` is not being run with Python 3.
 * [PyDrive](https://pypi.python.org/pypi/PyDrive)
 * [backoff](https://pypi.python.org/pypi/backoff)
 
