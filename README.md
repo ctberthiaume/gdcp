@@ -118,3 +118,39 @@ subfile.txt	0Bxt5Ia3JxzdHN0NqUEh3RnJic28
 bar.txt	0Bxt5Ia3JxzdHZGtabW9xTEduSkE
 Transferred ownership for 4 file(s)
 ```
+
+#### delete
+Recursively delete files or folders. For example, to delete folder `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp ` and all of its contents.
+
+```
+gdcp delete -i 0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+foo	0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+subfolder	0Bxt5Ia3JxzdHcVJxVTRfYVdOdmc
+subfile.txt	0Bxt5Ia3JxzdHN0NqUEh3RnJic28
+bar.txt	0Bxt5Ia3JxzdHZGtabW9xTEduSkE
+Deleted 4 file(s) and folder(s)
+```
+
+#### trash
+Recursively trash files or folders. For example, to trash folder `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp ` and all of its contents.
+
+```
+gdcp trash -i 0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+foo	0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+subfolder	0Bxt5Ia3JxzdHcVJxVTRfYVdOdmc
+subfile.txt	0Bxt5Ia3JxzdHN0NqUEh3RnJic28
+bar.txt	0Bxt5Ia3JxzdHZGtabW9xTEduSkE
+Trashed 4 file(s) and folder(s)
+```
+
+#### untrash
+Recursively untrash files or folders. For example, to untrash folder `0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp ` and all of its contents.
+
+```
+gdcp untrash -i 0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+foo	0Bxt5Ia3JxzdHfkJDeUxCQ3RyaWp
+subfolder	0Bxt5Ia3JxzdHcVJxVTRfYVdOdmc
+subfile.txt	0Bxt5Ia3JxzdHN0NqUEh3RnJic28
+bar.txt	0Bxt5Ia3JxzdHZGtabW9xTEduSkE
+Untrashed 4 file(s) and folder(s)
+```

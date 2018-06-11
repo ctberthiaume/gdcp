@@ -34,7 +34,7 @@ import warnings
 CLIENT_ID = None
 CLIENT_SECRET = None
 
-VERSION = "0.7.13"
+VERSION = "0.8.0"
 PROJ = "gdcp"  # name of this project
 CHUNKSIZE = 2 ** 20 * 64  # 64 MiB chunks
 
@@ -95,6 +95,21 @@ class Gdcp(object):
         for _id in ids:
             f = GdcpFile(self, gid=_id, checksum=checksum, root=root)
             f.download()
+
+    def delete(self, ids):
+        for _id in ids:
+	    f = GdcpFile(self, gid=_id)
+            f.delete()
+
+    def trash(self, ids):
+        for _id in ids:
+	    f = GdcpFile(self, gid=_id)
+            f.trash()
+
+    def untrash(self, ids):
+        for _id in ids:
+            f = GdcpFile(self, gid=_id)
+            f.untrash()
 
     def list(self, ids=None, json_flag=False, depth=0):
         if not ids:
@@ -511,6 +526,38 @@ class GdcpFile(object):
         # allocated memory than I'd like. Most of the performance hit in this
         # program is network latency so the wall time shouldn't budge
         gc.collect()
+
+    def delete(self):
+        """
+        Delete definitely a file or folder.
+        """
+        request = self.drive.auth.service.files().delete(
+	    fileId=self.id
+	)
+	execute_request(request)
+        self.gdcp.file_count += 1
+
+    def trash(self):
+        """
+        Trash a file or folder.
+        """
+        request = self.drive.auth.service.files().trash(
+	    fileId=self.id
+	)
+	execute_request(request)
+        self.gdcp.file_count += 1
+        #self.metadata['labels']['trashed'] = True
+
+    def untrash(self):
+        """
+        Untrash a file or folder.
+        """
+        request = self.drive.auth.service.files().untrash(
+            fileId=self.id
+        )
+        execute_request(request)
+        self.gdcp.file_count += 1
+        #self.metadata['labels']['trashed'] = False
 
     @property
     def metadata(self):
@@ -1264,6 +1311,45 @@ def cli():
         help="""Google Apps account email address of new owner""")
     parser_transfer.set_defaults(func=cli_transfer_ownership)
 
+    # Delete
+    parser_delete = subparsers.add_parser(
+        "delete",
+        help="""Delete definitely files or folders""",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
+    parser_delete.add_argument(
+        "-i", "--id",
+        default=[],
+        action="append",
+        help="File ID. - to read a list of IDs from STDIN.")
+    parser_delete.set_defaults(func=cli_delete)
+
+    # Trash
+    parser_trash = subparsers.add_parser(
+        "trash",
+        help="""Trash files and folders""",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
+    parser_trash.add_argument(
+        "-i", "--id",
+        default=[],
+        action="append",
+        help="File ID. - to read a list of IDs from STDIN.")
+    parser_trash.set_defaults(func=cli_trash)
+
+    # Untrash
+    parser_untrash = subparsers.add_parser(
+        "untrash",
+        help="""Untrash files and folders""",
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        parents=[parent])
+    parser_untrash.add_argument(
+        "-i", "--id",
+        default=[],
+        action="append",
+        help="File ID. - to read a list of IDs from STDIN.")
+    parser_untrash.set_defaults(func=cli_untrash)
+
     create_configdir()
 
     args = parser.parse_args()
@@ -1316,6 +1402,27 @@ def cli_transfer_ownership(args):
     gdcp.transfer_ownership(ids, args.email)
     log.info("Transferred ownership for %i file(s)" % gdcp.file_count)
     stdoutn("Transferred ownership for %i file(s)" % gdcp.file_count)
+
+def cli_delete(args):
+    gdcp = Gdcp(args.drive)
+    ids = parse_id_args(args.id)
+    gdcp.delete(ids)
+    log.info("Deleted %i file(s) and folder(s)" % gdcp.file_count)
+    stdoutn("Deleted %i file(s) and folder(s)" % gdcp.file_count)
+
+def cli_trash(args):
+    gdcp = Gdcp(args.drive)
+    ids = parse_id_args(args.id)
+    gdcp.trash(ids)
+    log.info("Trashed %i file(s) and folder(s)" % gdcp.file_count)
+    stdoutn("Trashed %i file(s) and folder(s)" % gdcp.file_count)
+
+def cli_untrash(args):
+    gdcp = Gdcp(args.drive)
+    ids = parse_id_args(args.id)
+    gdcp.untrash(ids)
+    log.info("Untrashed %i file(s) and folder(s)" % gdcp.file_count)
+    stdoutn("Untrashed %i file(s) and folder(s)" % gdcp.file_count)
 
 def cli_version(args):
     print("%s version %s" % (PROJ, VERSION))
