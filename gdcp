@@ -750,7 +750,10 @@ def configure_signals():
 
 def authorize(location=None):
     if not location:
-        location = os.path.join(os.environ["HOME"], "." + PROJ)
+        if os.name == 'nt':
+            location = os.path.join(os.environ["USERPROFILE"], "." + PROJ)
+        else:
+            location = os.path.join(os.environ["HOME"], "." + PROJ)
     # Authentication
     settings_file = os.path.join(location, "settings.yaml")
     credentials_file = os.path.join(location, "credentials.json")
@@ -782,7 +785,10 @@ def create_GoogleDrive():
 def create_configdir(location=None):
     # Create file paths
     if not location:
-        location = os.path.join(os.environ["HOME"], "." + PROJ)
+        if os.name == 'nt':
+            location = os.path.join(os.environ["USERPROFILE"], "." + PROJ)
+        else:
+            location = os.path.join(os.environ["HOME"], "." + PROJ)
     settings = os.path.join(location, "settings.yaml")
     client_secrets = os.path.join(location, "client_secrets.json")
     credentials = os.path.join(location, "credentials.json")
