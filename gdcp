@@ -820,7 +820,7 @@ def create_configdir(location=None):
         msg.append("- Create a new project and select it")
         msg.append("- Under 'APIs' make sure the 'Drive API' is turned on")
         msg.append("- Under 'Credentials' create a new OAuth client ID")
-        msg.append("  Choose 'Installed -> Other' for application type")
+        msg.append("  Choose 'Desktop app' for application type")
         msg.append("- Click 'Download JSON' to download the secrets file")
         msg.append("- Copy the secrets file to %s" % client_secrets)
         error("\n".join(msg))

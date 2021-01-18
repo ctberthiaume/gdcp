@@ -53,7 +53,7 @@ The first time you run `gdcp` a new directory `~/.gdcp/` will be created and you
 - Create a new project and select it
 - Under 'APIs' make sure the 'Drive API' is turned on
 - Under 'Credentials' create a new OAuth client ID
-  Choose 'Installed -> Other' for application type
+  Choose 'Desktop app' for application type
 - Click 'Download JSON' to download the secrets file
 - Copy the secrets file to ~/.gdcp/client_secrets.json
 ```
