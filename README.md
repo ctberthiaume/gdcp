@@ -1,5 +1,7 @@
 # gdcp
 
+This project is not being actively maintained and has been archived.
+
 gdcp (**G**oogle **D**rive **cp**) is a command-line tool that supports robust and fast file transfers to and from Google Drive, somewhat analogous to using `scp` to transfer files to and from a Linux/Unix server. It is designed to be used in a workflow where large data sets stored in Google Drive are downloaded to a server for processing and results are uploaded back to Google Drive.
 
 
